@@ -1,0 +1,10 @@
+Python: see PYTHON-LICENSE.txt.
+PyInstaller bootloader: see licenses/pyinstaller (including its exception).
+NVIDIA Python bindings: see licenses/nvidia-ml-py.
+Runtime package metadata and license texts are included in _internal/*.dist-info.
+GPU driver libraries are not bundled. Some native runtime libraries are bundled;
+their copyright/license texts are in licenses/native and licenses/common-licenses.
+
+This local edition uses Python 3.12. Original application: MIT, copyright Scott Hanselman.
+Local TUI and packaging changes are described in README-compact.txt.
+Additional Python dependency license texts: licenses/<package>.

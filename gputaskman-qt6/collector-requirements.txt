@@ -1,0 +1,16 @@
+altgraph==0.17.5
+linkify-it-py==2.2.0
+markdown-it-py==4.3.0
+mdit-py-plugins==0.7.0
+mdurl==0.1.2
+nvidia-ml-py==13.615.71
+packaging==26.3
+platformdirs==4.14.5
+psutil==7.2.2
+Pygments==2.21.0
+pyinstaller==6.22.3
+pyinstaller-hooks-contrib==2026.10
+rich==15.0.0
+setuptools==84.2.1
+textual==8.2.8
+typing_extensions==4.16.0

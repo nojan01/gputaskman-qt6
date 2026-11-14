@@ -1,0 +1,15 @@
+name: GPU or driver report
+description: Report missing, incorrect or mismatched GPU readings.
+body:
+  - type: textarea
+    attributes:
+      label: System and hardware
+      description: OS version, kernel, driver, GPU model/count, application version and standard/full access. Do not include full serial numbers or unredacted snapshots.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Expected and observed behavior
+      description: Include reproduction steps and the relevant counter/identity warning. State whether this is real hardware or demo mode.
+    validations:
+      required: true
