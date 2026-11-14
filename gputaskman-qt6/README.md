@@ -2,8 +2,7 @@
 
 A native, MIT-licensed Linux GPU monitor built on Scott Hanselman's
 [gputaskman](https://github.com/shanselman/gputaskman) 0.4.1 collector.
-Uses PySide6 and an original dark palette inspired by TMOG; no TMOG code,
-logos or other graphical assets are included.
+Uses PySide6 with an original dark interface, clear charts and independent GPU views.
 
 **Primary targets: Debian 13.7 and Ubuntu 26.04, amd64.** Linux Mint 22.3 and
 Ubuntu 24.04 remain secondary compatibility targets. No Windows/macOS support
@@ -12,11 +11,11 @@ is claimed for this frontend.
 ## Install
 
 Download the DEB and `SHA256SUMS` from the
-[GitHub release](https://github.com/nojan01/gputaskman-qt6/releases/tag/v0.3.0).
+[GitHub release](https://github.com/nojan01/gputaskman-qt6/releases/tag/v0.3.1).
 Close the previous GUI instance, then install:
 
 ```sh
-sudo apt install ./gputaskman-qt6_0.3.0-1_amd64.deb
+sudo apt install ./gputaskman-qt6_0.3.1-1_amd64.deb
 ```
 
 Launch **GPU Task Manager (Qt 6)** in the application menu or run `gputaskman-qt6`.

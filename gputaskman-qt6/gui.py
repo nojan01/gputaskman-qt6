@@ -643,7 +643,7 @@ class Window(QMainWindow):
             except OSError as e:QMessageBox.warning(self,'Export failed',str(e))
     def help(self):
         dialog=QDialog(self);dialog.setWindowTitle('Help & licenses');dialog.resize(780,620);lay=QVBoxLayout(dialog);text=QTextBrowser();text.setOpenExternalLinks(True)
-        text.setHtml('''<h1>GPU Task Manager · Qt 6</h1><p>A separate graphical frontend for gputaskman 0.4.1, with an original TMOG-inspired palette. No TMOG logos or code are included.</p>
+        text.setHtml('''<h1>GPU Task Manager · Qt 6</h1><p>A separate graphical frontend for gputaskman 0.4.1, with an original dark interface and independent GPU views.</p>
 <h2>Navigation</h2><p><b>Overview</b>: key readings and histories. <b>Performance</b>: all metrics or a single full-width chart. <b>All GPUs</b>: independent per-device readings and identities, including offline devices. Click any chart to focus it. <b>Processes</b>: sortable GPU process list, search and inspection. <b>Diagnostics</b>: counter availability and provenance.</p>
 <p><b>Space</b> pause/resume · <b>Ctrl+R</b> reconnect · <b>Ctrl+P</b> processes · <b>F1</b> help.</p>
 <h2>Full access</h2><p>The window runs as your user. Startup asks Polkit for full access; use --standard-access to skip it. “Enable full access” also asks Polkit to start only the read-only collector as root. Cancelling keeps standard access. Root shells need no further authentication. No kernel security settings are modified.</p>

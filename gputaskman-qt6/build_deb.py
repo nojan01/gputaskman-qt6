@@ -10,7 +10,7 @@ import tempfile
 here=Path(__file__).resolve().parent
 workspace=here.parent
 out=here/'release';out.mkdir(exist_ok=True)
-version='0.3.0-1'
+version='0.3.1-1'
 source_archive=out/f'gputaskman-qt6_{version}_source.tar.gz'
 with tarfile.open(source_archive,'w:gz') as archive:
     for folder in [here,workspace/'gputaskman-source']:
@@ -75,7 +75,6 @@ See LICENSE-COLLECTOR-MIT.txt and /opt/gputaskman-qt6/collector/licenses.
 Bundled PySide6/Qt essential libraries use LGPLv3; see THIRD_PARTY.md,
 third-party/LGPL-3.0-only.txt and matching source archives in the GitHub release.
 Bundled Python and other runtimes retain their own licenses.
-No TMOG assets or source code are included.
 ''')
     with tarfile.open(docs/'collector-source.tar.gz','w:gz') as archive:
         backend=workspace/'gputaskman-source'
@@ -98,8 +97,7 @@ Depends: libc6 (>= 2.38), fonts-dejavu-core, libstdc++6 (>= 12), libgcc-s1, pkex
 Recommends: fonts-dejavu-core
 Homepage: https://github.com/nojan01/gputaskman-qt6
 Description: Qt 6 GPU telemetry and process monitor
- Separate graphical frontend with dark charts and an original TMOG-inspired
- palette. Uses gputaskman 0.4.1 for read-only local telemetry.
+ Separate graphical frontend with dark charts and an original interface. Uses gputaskman 0.4.1 for read-only local telemetry.
  Only the collector is elevated via Polkit; the window stays unprivileged.
  The existing gputaskman TUI is not modified or replaced.
 ''')

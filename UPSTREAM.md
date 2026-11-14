@@ -8,6 +8,4 @@ Commit: f398ba1e90595e376af167369ecaaa159e1dd11e
 
 The gputaskman-source directory is an unmodified export of that tag. The original
 MIT copyright/license is preserved. Our new Qt application and integration are
-MIT, Copyright (c) 2026 Norbert Jander. This is an independent frontend; no upstream
-or TMOG endorsement is claimed. TMOG logos, source, fonts and graphical assets
-are not included. The separately maintained local TUI is not part of this release.
+MIT, Copyright (c) 2026 Norbert Jander. This is an independent frontend; no upstream endorsement is claimed. The separately maintained local TUI is not part of this release.
