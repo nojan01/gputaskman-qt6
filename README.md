@@ -131,3 +131,6 @@ are simulations; no physical multi-NVIDIA server has been validated. Container
 GUI tests do not validate every real driver, native desktop session or iLO
 latency/compression. Report hardware, driver, PCI/UUID identification, expected
 behavior and observed behavior when reporting a GPU-specific problem.
+
+The checked-in [CI template](docs/ci-workflow.yml) is ready for GitHub Actions;
+workflow activation requires workflow-write permission. See [CI status](docs/CI.md).
