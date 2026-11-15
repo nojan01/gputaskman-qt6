@@ -11,11 +11,11 @@ is claimed for this frontend.
 ## Install
 
 Download the DEB and `SHA256SUMS` from the
-[GitHub release](https://github.com/nojan01/gputaskman-qt6/releases/tag/v0.3.1).
+[GitHub release](https://github.com/nojan01/gputaskman-qt6/releases/tag/v0.4.1).
 Close the previous GUI instance, then install:
 
 ```sh
-sudo apt install ./gputaskman-qt6_0.3.1-1_amd64.deb
+sudo apt install ./gputaskman-qt6_0.4.1-1_amd64.deb
 ```
 
 Launch **GPU Task Manager (Qt 6)** in the application menu or run `gputaskman-qt6`.
@@ -127,3 +127,11 @@ are simulations; no physical multi-NVIDIA server has been validated. Container
 GUI tests do not validate every real driver, native desktop session or iLO
 latency/compression. Report hardware, driver, PCI/UUID identification, expected
 behavior and observed behavior when reporting a GPU-specific problem.
+
+## Recording and playback
+
+Use **Record** to stream complete all-GPU samples to a JSONL file, and **Stop recording** to finish. Recording follows the refresh rate; pausing acquisition also pauses recording. Files are flushed after every sample. They contain hardware identifiers, process details and potentially local paths/model names; share deliberately.
+
+**Open recording** stops the live collector and replays the saved samples using original time intervals. All views and per-GPU histories remain available. Use Pause/Resume, Rewind and 0.5×/1×/2×/4× speed (applied to the next scheduled interval). The timestamp and sample position appear beside the controls. Return to live restarts acquisition and may require authentication. Playback does not require elevated access. Playback currently loads files up to 256 MB into memory; recording streams to disk without this size limit. No random seeking or CSV export is included.
+
+Recording duration can be set from 1 to 10080 minutes (7 days); 0 / Unlimited keeps recording until stopped. The countdown uses elapsed monotonic time, including acquisition pauses. At expiry the file closes automatically while live monitoring continues. The duration is locked during recording and playback.

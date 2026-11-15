@@ -13,11 +13,11 @@ is claimed for this frontend.
 ## Install
 
 Download the DEB and `SHA256SUMS` from the
-[GitHub release](https://github.com/nojan01/gputaskman-qt6/releases/tag/v0.3.1).
+[GitHub release](https://github.com/nojan01/gputaskman-qt6/releases/tag/v0.4.1).
 Close the previous GUI instance, then install:
 
 ```sh
-sudo apt install ./gputaskman-qt6_0.3.1-1_amd64.deb
+sudo apt install ./gputaskman-qt6_0.4.1-1_amd64.deb
 ```
 
 Launch **GPU Task Manager (Qt 6)** in the application menu or run `gputaskman-qt6`.

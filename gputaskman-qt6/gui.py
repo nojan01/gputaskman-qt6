@@ -19,7 +19,7 @@ from PySide6.QtGui import QIcon, QColor, QFont, QPainter, QPainterPath, QPen, QL
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QFrame, QLabel, QPushButton,
     QVBoxLayout, QHBoxLayout, QGridLayout, QComboBox, QStackedWidget, QScrollArea,
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView, QTextBrowser,
-    QSplitter, QLineEdit, QFileDialog, QMessageBox, QDialog, QSizePolicy)
+    QSpinBox, QSplitter, QLineEdit, QFileDialog, QMessageBox, QDialog, QSizePolicy)
 
 PALETTE = {'bg':'#1d2021','surface':'#25292a','raised':'#2c3233','line':'#364244',
     'text':'#e9f0f1','muted':'#95a6ad','cyan':'#20d9ef','green':'#39d353',
@@ -227,6 +227,9 @@ class Window(QMainWindow):
         super().__init__()
         self.demo=demo;self.demo_gpus=demo_gpus;self.worker_override=worker;self.proc=None;self.buffer=b'';self.last=None
         self.pending_gap=False;self.paused=False;self.elevated=os.geteuid()==0 or not standard_access;self.stopping=False;self.rows=[];self.last_received=0
+        self.record_file=None;self.replay_frames=None;self.replay_index=0;self.record_deadline=None
+        self.record_timer=QTimer(self);self.record_timer.setInterval(250);self.record_timer.timeout.connect(self.check_recording_duration)
+        self.replay_timer=QTimer(self);self.replay_timer.setSingleShot(True);self.replay_timer.timeout.connect(self.replay_step)
         self.settings=QSettings('gputaskman','Qt6')
         self.device_inventory={};self.gpu_snapshots={};self.history_cache={};self.gpu_errors={};self.last_frame={}
         self.fleet_cards={};self.auto_fleet_selected=False;self.selected_gpu_id=None
@@ -255,6 +258,19 @@ class Window(QMainWindow):
         self.rate.setCurrentIndex(1);self.rate.currentIndexChanged.connect(self.rate_changed);header.addWidget(self.rate)
         self.pause_button=QPushButton('Ⅱ  Pause');self.pause_button.setCheckable(True);self.pause_button.clicked.connect(self.pause);header.addWidget(self.pause_button)
         body.addLayout(header)
+        transport=QHBoxLayout()
+        self.record_button=QPushButton('● Record');self.record_button.clicked.connect(self.toggle_recording);transport.addWidget(self.record_button)
+        load=QPushButton('Open recording');load.clicked.connect(self.open_recording);transport.addWidget(load)
+        self.rewind_button=QPushButton('Rewind');self.rewind_button.clicked.connect(self.rewind_recording);self.rewind_button.setEnabled(False);transport.addWidget(self.rewind_button)
+        self.speed=QComboBox()
+        for speed in [.5,1,2,4]:self.speed.addItem(f'{speed:g}× playback',speed)
+        self.speed.setCurrentIndex(1);transport.addWidget(self.speed)
+        self.return_button=QPushButton('Return to live');self.return_button.clicked.connect(self.return_live);self.return_button.setEnabled(False);transport.addWidget(self.return_button)
+        transport.addStretch();body.addLayout(transport)
+        recording_options=QHBoxLayout();recording_options.addWidget(label('Recording duration:'))
+        self.record_duration=QSpinBox();self.record_duration.setRange(0,10080);self.record_duration.setSuffix(' min');self.record_duration.setSpecialValueText('Unlimited');self.record_duration.setToolTip('Elapsed wall-clock time, including pauses. 0 means unlimited; maximum 7 days.')
+        recording_options.addWidget(self.record_duration)
+        self.record_status=label('','Muted');self.record_status.setWordWrap(True);recording_options.addWidget(self.record_status,1);body.addLayout(recording_options)
         self.notice=label('');self.notice.setWordWrap(True);self.notice.setStyleSheet('color:#ffca73; background:#332c21; border:1px solid #58492d; border-radius:5px; padding:8px;');self.notice.hide();body.addWidget(self.notice)
         self.pages=QStackedWidget();body.addWidget(self.pages,1)
         self.build_overview();self.build_performance();self.build_processes();self.build_diagnostics();self.build_fleet()
@@ -276,6 +292,83 @@ class Window(QMainWindow):
             QTimer.singleShot(800,lambda:self.grab().save(screenshot))
             QTimer.singleShot(950,QApplication.instance().quit)
         if self_test:QTimer.singleShot(700,self.run_self_test)
+
+    def check_recording_duration(self):
+        if self.record_file is None or self.record_deadline is None:return
+        remaining=max(0,math.ceil(self.record_deadline-time.monotonic()))
+        if remaining==0:
+            self.stop_recording();self.record_status.setText('Recording saved · duration reached');return
+        self.record_status.setText(f'Recording all GPUs · {remaining//3600:02d}:{remaining//60%60:02d}:{remaining%60:02d} remaining')
+    def stop_recording(self):
+        self.record_timer.stop();self.record_deadline=None;self.record_duration.setEnabled(self.replay_frames is None)
+        if self.record_file is not None:
+            self.record_file.close();self.record_file=None
+        self.record_button.setText('● Record')
+    def toggle_recording(self):
+        if self.record_file is not None:
+            self.stop_recording();self.record_status.setText('Recording saved');return
+        path,_=QFileDialog.getSaveFileName(self,'Record all GPUs','gpu-recording.jsonl','GPU recording (*.jsonl)')
+        if not path:return
+        try:
+            self.record_file=open(path,'w',encoding='utf-8')
+            self.record_file.write(json.dumps({'format':'gputaskman-recording','version':1,'demo':self.demo})+'\n')
+            self.record_file.flush()
+        except OSError as error:
+            self.stop_recording();QMessageBox.warning(self,'Recording failed',str(error));return
+        self.record_duration.setEnabled(False)
+        minutes=self.record_duration.value();self.record_deadline=time.monotonic()+minutes*60 if minutes else None
+        if minutes:self.record_timer.start()
+        self.record_button.setText('■ Stop recording');self.record_status.setText('Recording all GPUs · '+Path(path).name)
+        self.check_recording_duration()
+    def open_recording(self):
+        path,_=QFileDialog.getOpenFileName(self,'Open recording','','GPU recording (*.jsonl)')
+        if not path:return
+        try:
+            if Path(path).stat().st_size>256*1024*1024:raise ValueError('Recording exceeds the 256 MB playback limit.')
+            with open(path,encoding='utf-8') as stream:
+                header=json.loads(stream.readline())
+                if header.get('format')!='gputaskman-recording' or header.get('version')!=1:raise ValueError('Unsupported recording format.')
+                frames=[json.loads(line) for line in stream if line.strip()]
+            previous=None
+            for frame in frames:
+                stamp=frame.get('taken')
+                if not isinstance(stamp,(int,float)) or not math.isfinite(stamp) or (previous is not None and stamp<previous):raise ValueError('Invalid recording timestamps.')
+                if not isinstance(frame.get('gpus'),list) or not isinstance(frame.get('snapshots'),list):raise ValueError('Invalid GPU frame.')
+                previous=stamp
+            if not frames:raise ValueError('Recording contains no samples.')
+        except (OSError,ValueError,TypeError,AttributeError) as error:
+            QMessageBox.warning(self,'Cannot open recording',str(error));return
+        self.stop_recording();self.stop_process()
+        if self.demo:self.demo_timer.stop()
+        self.replay_frames=frames;self.record_duration.setEnabled(False);self.record_button.setEnabled(False);self.rate.setEnabled(False);self.access.setEnabled(False)
+        self.return_button.setEnabled(True);self.rewind_button.setEnabled(True);self.gpu.setEnabled(True)
+        self.rewind_recording()
+    def reset_session(self):
+        self.clear_histories();self.device_inventory={};self.gpu_snapshots={};self.history_cache={};self.gpu_errors={};self.last_frame={}
+        for card in self.fleet_cards.values():card.deleteLater()
+        self.fleet_cards={};self.auto_fleet_selected=False
+    def rewind_recording(self):
+        if self.replay_frames is None:return
+        self.replay_timer.stop();self.reset_session();self.replay_index=0;self.paused=False
+        self.pause_button.setChecked(False);self.pause_button.setText('Ⅱ  Pause');self.replay_step()
+    def replay_step(self):
+        if self.replay_frames is None or self.paused:return
+        if self.replay_index>=len(self.replay_frames):
+            self.live.setText('■  Playback finished');return
+        frame=self.replay_frames[self.replay_index];self.receive(frame);self.replay_index+=1
+        self.access.setEnabled(False);self.live.setText('▶  Playback')
+        self.record_status.setText(f'Playback {self.replay_index}/{len(self.replay_frames)} · '+datetime.datetime.fromtimestamp(frame['taken']).isoformat(sep=' ',timespec='seconds'))
+        if self.replay_index<len(self.replay_frames):
+            delay=(self.replay_frames[self.replay_index]['taken']-frame['taken'])/self.speed.currentData()
+            self.replay_timer.start(max(1,min(2147483647,round(delay*1000))))
+        else:self.live.setText('■  Playback finished')
+    def return_live(self):
+        if self.replay_frames is None:return
+        self.replay_timer.stop();self.replay_frames=None;self.reset_session();self.paused=False
+        self.pause_button.setChecked(False);self.pause_button.setText('Ⅱ  Pause')
+        self.record_duration.setEnabled(True);self.record_button.setEnabled(True);self.rate.setEnabled(True);self.return_button.setEnabled(False);self.rewind_button.setEnabled(False);self.record_status.clear()
+        if self.demo:self.demo_timer.start(1000)
+        else:self.restart()
 
     def build_overview(self):
         page=QWidget();lay=QVBoxLayout(page);lay.setContentsMargins(0,0,0,0);lay.setSpacing(14)
@@ -353,6 +446,7 @@ class Window(QMainWindow):
     def navigate(self,index):
         self.pages.setCurrentIndex(index);self.heading.setText(['Overview','Performance','Processes','Diagnostics','All GPUs'][index])
         for i,button in enumerate(self.nav):button.setChecked(i==index)
+        self.render_selected()
     def focus_metric(self,index):
         self.navigate(1);self.metric_choice.setCurrentIndex(index+1)
     def metric_changed(self):
@@ -391,7 +485,7 @@ class Window(QMainWindow):
             process.terminate();process.waitForFinished(500)
         process.deleteLater()
     def restart(self):
-        if self.demo:return
+        if self.demo or self.replay_frames is not None:return
         self.stop_process();self.buffer=b'';self.last_received=0;self.worker_stderr='';self.pending_gap=True
         process=QProcess(self);self.proc=process
         process.readyReadStandardOutput.connect(self.read_worker)
@@ -442,6 +536,10 @@ class Window(QMainWindow):
         self.elevated=not self.elevated;self.restart()
     def pause(self,checked):
         self.paused=checked;self.pause_button.setText('▶  Resume' if checked else 'Ⅱ  Pause')
+        if self.replay_frames is not None:
+            if checked:self.replay_timer.stop()
+            else:self.replay_step()
+            return
         if self.proc:self.proc.write(b'pause\n' if checked else b'resume\n')
         self.live.setText('Ⅱ  Paused' if checked else '●  Live')
         if not checked:self.pending_gap=True
@@ -463,6 +561,11 @@ class Window(QMainWindow):
             if self.pending_gap:history.append((ts-.001,None))
             history.append((ts,values.get(metric)))
     def receive(self,message):
+        if self.record_file is not None:
+            try:
+                self.record_file.write(json.dumps(message,ensure_ascii=False,allow_nan=False)+'\n');self.record_file.flush()
+            except (OSError,ValueError) as error:
+                self.stop_recording();QMessageBox.warning(self,'Recording stopped',str(error))
         self.last_received=time.monotonic();self.last_frame=message
         raw_choices=message.get('gpus',[])
         choices=[{**item,'id':item.get('id') or f"legacy:{item['index']}",
@@ -521,7 +624,9 @@ class Window(QMainWindow):
         self.last=data;nv=data.get('device') or {};cache=self.history_cache.get(key,{})
         name=self.choice_label(identity)
         self.subtitle.setText(name+(' · DEMO DATA' if self.demo else ''));self.subtitle.setToolTip('UUID: '+str(identity.get('uuid') or 'not reported')+'\nSerial: '+str(identity.get('serial') or 'not reported'))
-        notes=[data.get(k) for k in ['counter_status','process_status'] if data.get(k)]
+        # Device counter warnings are already displayed on each fleet card.
+        status_keys=['process_status'] if self.pages.currentIndex()==4 else ['counter_status','process_status']
+        notes=[data.get(k) for k in status_keys if data.get(k)]
         if self.gpu_errors.get(key) and self.gpu_errors[key] not in notes:notes.append(self.gpu_errors[key])
         if identity.get('identity_warning'):notes.append(identity['identity_warning'])
         if self.last_frame.get('discovery_error'):notes.append('Inventory refresh failed: '+self.last_frame['discovery_error'])
@@ -633,7 +738,7 @@ class Window(QMainWindow):
         text+='<h3>How to interpret the readings</h3><p>Unknown is n/a, never zero. Device telemetry, OS-reported system memory, inferred process memory and runtime-reported model evidence remain separate. Intel memory may be a sum of visible clients with a PCI-window estimate for capacity. It is not a device-wide measured total. AMD graphics-engine activity is not necessarily equivalent to NVIDIA utilization. Full access cannot create counters the driver does not expose.</p>'
         self.diagnostics.setHtml(text)
     def check_stale(self):
-        if not self.demo and not self.paused and self.last_received and time.monotonic()-self.last_received>max(5,3*(self.rate.currentData() or 1)):
+        if self.replay_frames is None and not self.demo and not self.paused and self.last_received and time.monotonic()-self.last_received>max(5,3*(self.rate.currentData() or 1)):
             self.live.setText('●  Waiting for readings');self.live.setStyleSheet('color:#ffb52e;')
     def export(self,all_gpus=False):
         if not self.last and not all_gpus:return
@@ -684,6 +789,7 @@ class Window(QMainWindow):
         except Exception:
             import traceback;traceback.print_exc();QApplication.instance().exit(1)
     def closeEvent(self,event):
+        self.stop_recording();self.replay_timer.stop()
         self.stopping=True;self.stop_process()
         if not self.demo:self.settings.setValue('geometry',self.saveGeometry())
         super().closeEvent(event)
