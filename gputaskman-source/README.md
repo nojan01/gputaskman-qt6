@@ -158,7 +158,7 @@ Ascend container and PID-namespace behavior is not validated.
 
 | | Native Linux | WSL, interop on (default) | WSL, interop off or `--no-host` |
 |---|---|---|---|
-| Device totals, load, temperature, power, clocks | NVML | NVML | NVML |
+| Device totals, load, temperature, power, clocks | NVML / DRM | NVML / AMD SMI | NVML / AMD SMI |
 | Per-process VRAM | NVML, measured (in a container: owner matched, `*` or `?`) | Matched from the Windows host, marked `*` or `?` | `n/a` |
 | Per-process GPU load | NVML (SM, encoder, decoder) | `n/a` for Linux processes | `n/a` |
 | Spill / Paged | Not available (blank) | Windows rows only | Not available |
@@ -226,8 +226,8 @@ up without double counting. Otherwise the process shows VRAM and Shared as `n/a`
   resident minus shared is not private memory and is never computed.
 - **Primary node** (`/dev/dri/card*`, typically a compositor): root-owned logind keeps a copy of that
   fd, which a normal user can't see, so a single holder can't be proven.
-- **Legacy**: older kernels whose amdgpu fdinfo lacks `drm-shared-vram`/`drm-shared-gtt`, and Intel integrated GPUs
-  and `xe` (below).
+- **Legacy**: older kernels whose amdgpu fdinfo lacks `drm-shared-vram`/`drm-shared-gtt`, or any DRM
+  client without the recognized residency and sharing counters needed to prove private memory.
 - **Incomplete**: some of the process's fds or fdinfo could not be read (GPU% is `n/a` too).
 - **Partial scan**: the TUI's 50 ms listing budget ran out this refresh, so a process it skipped might
   hold the same client (GPU% is `n/a` too). Expected to be rare on a desktop (~9 ms for ~8,000 fds,
@@ -281,13 +281,43 @@ PMUs are matched by PCI address (`i915_<PCI BDF>`); the legacy `i915` PMU is use
 card. If multiple cards resolve to the same PMU, their load stays `N/A` with an attribution reason.
 Each collector opens device counters only for its selected GPU and owns those handles and baselines;
 closing one does not reset another collector's readings.
-`xe` cards are detected, but its fdinfo uses other keys (`drm-cycles-*`, `drm-resident-vram0`/`-gtt`), so its
-per-process rows show `n/a` until they are decoded on hardware.
+Xe primary-GT clocks use the [kernel's documented frequency sysfs interface](https://docs.kernel.org/6.18/gpu/xe/xe_gt_freq.html)
+under the selected PCI device's `tile0/gt0/freq0`: `act_freq` is actual, `cur_freq` is requested,
+and `rp0_freq` is the reported hardware maximum. A measured actual frequency of zero is retained
+when the GT sleeps, even if the minimum/requested frequency is 400 MHz; the request is used only
+when the actual reading is unavailable. This reads the primary GT only, not the media GT or other
+tiles, and writes no frequency/limit settings.
+
+For Xe throttling, prefer the aggregate `freq0/throttle/reasons` snapshot when available. Older
+kernels use the separate `reason_*` files; active reasons remain reportable, but failed reads prevent
+claiming idle. An unavailable reading remains unknown. i915 retains its existing paths and behavior.
+Live check: Arc Pro B65 (`8086:e222`), xe, Linux 7.0.0-43-generic, 2026-11-15: minimum/requested
+400 MHz, reported maximum 2400 MHz, and a readable idle throttle snapshot. No workload was started
+or throttling induced. Active throttle reasons and missing-node handling are fixture-tested;
+other Xe cards, integrated Xe, multiple tiles and active hardware throttling are not validated.
+
+**Intel `xe` per-process counters** use the same ownership and sharing rules. Resident `vram*` regions
+supply local memory and `gtt` supplies GPU-accessible system memory; CPU-only `system` memory and the
+distinct `stolen` region are not charged. Every reported region must have a valid zero `drm-shared-*`
+counter before memory can be charged privately. On an integrated GPU, private GTT is its GPU memory,
+not spill. Device-wide memory remains a labelled client sum / PCI-window estimate, not a device counter;
+this path adds no new device-wide load or sensor probes.
+
+Xe engine load uses deltas of paired `drm-cycles-*` and `drm-total-cycles-*` GPU ticks, not CPU wall time.
+GPU% is the busiest engine with a valid interval this refresh; a stalled, reset or newly seen engine
+does not hide another engine that advanced. Omitted engines are unknown, so a partial reading can
+understate the process's busiest engine; if none has a valid interval, GPU% is `n/a`. As with i915,
+engine-class capacity is not divided out.
+
+Contributor check, not repeated by the maintainer: B65 (`8086:e222`), `xe`, Linux 7.0.0-43-generic.
+Thirty read-only scans of nine existing GPU processes produced 270 process-load readings (0-3.119%),
+with median scan time 13.196 ms and maximum 17.044 ms. No workload was started. Rates under controlled
+load and the sharing gate against a known shared buffer have **not been validated on hardware**.
 
 Live check, reported by the contributor and not repeated by the maintainer: Linux 6.12, an Arc A770 (discrete, 16 GiB
 BAR) and a UHD 730 (integrated) on `i915`. Both cards were found, named, and selectable with `--gpu`; the Arc showed
 per-process VRAM and engine load, and the TUI rendered both. The fdinfo formats of both drivers, taken from the kernel
-sources, are covered by unit tests. **Not validated on hardware:** `xe`, Arc cards without resizable BAR, and
+sources, are covered by unit tests. **Not validated by the maintainer on hardware:** `xe`, Arc cards without resizable BAR, and
 multi-GPU systems other than that pair.
 
 Live check on an integrated GPU (ASUS Vivobook 14 X1404VA, Intel Core 3 100U Xe-LP, `i915`, kernel 7.3.1, Mesa 26.2.5):
@@ -319,11 +349,53 @@ through the same PDH array API as the Windows backend and streams them back once
 - **Linux rows** get a size by matching `vmwp.exe`'s GPU contexts to Linux processes (below).
 
 The first host sample takes about 2.5 s; the TUI shows `starting` until then, and `--once` waits
-for it. The host adapter is paired with the NVML device by memory usage, because WSL's adapter
+for it. The host adapter is paired with the NVML or AMD SMI device by memory usage, because WSL's adapter
 LUIDs differ from the host's. An ambiguous pairing shows `unmatched` instead of guessing. With other
 Hyper-V VMs or Windows Sandbox running, the row is labeled `VM worker` because it cannot be tied
 to WSL alone. `--no-host` turns the host stream off; without interop you get device-wide numbers
-and a list of the Linux processes that hold `/dev/dxg`, with VRAM shown as `n/a`.
+and a list of the Linux processes that hold `/dev/dxg`, with VRAM shown as `n/a`. On AMD GPUs in WSL,
+device discovery and telemetry use ROCm's `amdsmi` Python bindings (`/opt/rocm-wsl/share/amd_smi` or
+`/opt/rocm/share/amd_smi`), reading VRAM via `amdsmi_get_gpu_memory_total` / `amdsmi_get_gpu_memory_usage`
+(the contributor observed uninitialized `vram_used` from `amdsmi_get_gpu_vram_usage` in their
+`rocm-wsl` build). That fallback is never used in WSL, even when its bytes happen to fit.
+Missing or out-of-range usage stays `null`/`N/A`, not a cached value or a clamped zero.
+The existing per-refresh `/dev/dxg` holder scan also records whether the monitor holds a context;
+host attribution reuses it rather than scanning every process's file descriptors again.
+
+**AMD WSL prerequisites are user-managed.** Native Linux ROCm/AMD SMI packages alone do not provide
+the WSL bridge. Check AMD's supported GPU and Windows-driver matrix, then follow the official
+[ROCDXG instructions](https://github.com/ROCm/librocdxg#readme) for matching `rocdxg-amd-smi-lib`
+and `rocdxg-roct` packages. An AMD CPU alone does not establish support. gputaskman does not install
+packages, change drivers, enable WSL, or modify loader configuration. `--list-gpus` prints a
+discovery failure and recommendation to stderr; the TUI and one-shot reports expose it as
+`counter_status` (JSON: a string, or `null` when there is no warning). Missing bindings/libraries,
+initialization failures, no usable device, and a wrapper/library major-version mismatch are
+distinguished. The wrapper loads its own library; gputaskman never preloads a replacement.
+
+AMD SMI sessions are shared across discovery and live collectors, so constructing or closing one
+does not shut down another's library session. An edge-temperature critical limit of zero means
+unsupported, following AMD's CLI; a measured current temperature of zero with a supported limit
+remains zero. Unsigned unknown power-cap sentinels are not watts. Windows host process counters
+can overlap on some drivers: if their sum exceeds device capacity, WSL's JSON `attributed` is
+`null` with a warning. Raw per-process readings are retained; the adapter reading remains the
+device total, and inferred Linux children are never added to their VM row.
+
+Contributor-reported AMD WSL check: Windows 11, Ubuntu 24.04 under WSL2 kernel
+6.6.87.2-microsoft-standard-WSL2, Radeon RX 7900 XTX 24 GB, Adrenalin 26.20.15.07 and
+amd-smi 1.2.2 under `/opt/rocm-wsl`, with three llama-server instances and PyTorch/HIP.
+The contributor reported device telemetry and host VM/context matching; those workloads have not
+been independently repeated.
+
+Maintainer read-only check on the revised code (2026-11-13): Windows 11 build 26300, Radeon 860M
+(`1002:1114`), Windows driver 32.0.22050.1003; Ubuntu 26.04 under WSL2, native x86_64 Python 3.14,
+matching WSL AMD SMI wrapper/library 1.2.2 and ROCDXG 1.2.2. `--list-gpus`, `--once`, and JSON
+identified the adapter; host pairing succeeded. Thirty device samples had no failures (median
+6.27 ms, max 9.09 ms); first discovery was 71.87 ms. Unsupported edge temperature and power cap
+stayed unknown; zero memory activity stayed zero. Creating and closing a second collector for
+the same adapter did not break the first. No new GPU workload was launched: real multi-adapter
+hardware, model-load/context attribution, and AMD SMI on Windows remain unvalidated (the Windows
+smoke check used ADL). The raw driver readings can exceed physical VRAM or overlap across host
+processes; these checks do not establish that the driver reports uniquely attributed bytes.
 
 ### How WSL per-process VRAM is matched
 
@@ -474,6 +546,8 @@ uv run --locked gputaskman --once       # one text snapshot
 uv run --locked gputaskman --json       # one JSON snapshot; implies --once
 uv run --locked gputaskman diff before.json after.json   # compare two --json snapshots
 uv run --locked gputaskman record -o session.jsonl --duration 300   # append one --json snapshot per second for 5 minutes
+uv run --locked gputaskman replay session.jsonl                     # play that recording back, offline
+uv run --locked gputaskman summary session.jsonl   # average and peak readings and top processes of a recording
 uv run --locked gputaskman --no-host    # WSL: don't read Windows host counters through interop
 uv run --locked gputaskman --no-system  # don't sample system RAM/CPU: no panel, columns, or JSON section
 uv run --locked gputaskman --help
@@ -747,7 +821,56 @@ uv run --locked gputaskman diff first.json last.json
 ```
 
 On Linux, WSL, and macOS use `head -n 1 session.jsonl > first.json` and `tail -n 1 session.jsonl > last.json`.
-Replaying or summarizing a whole recording is not built yet.
+
+`summary` reads a whole recording and, like `diff`, collects nothing:
+
+```powershell
+uv run --locked gputaskman summary session.jsonl          # add --json for machine-readable output
+```
+
+It prints the GPU, the number of samples and the time span, then the average and peak of VRAM used,
+shared memory, GPU load, temperature and power (from the `device` section), plus system RAM and CPU
+when the file has a `system` section. Values are shown exactly as recorded, never capped: Windows can
+report a process's engine above 100% for one interval when work spills into the next. A non-finite,
+negative, or above-1000% Windows process-engine counter is instead unavailable (`gpu_pct` and
+`engines` are `null`, with `engine_unavailable_reason`); device load derived from those counters is
+also unavailable for that adapter. A `null` is
+skipped, not counted as 0, and the `READINGS` column says how many samples had a value; a metric
+with no readings is left out. The top processes are ranked by peak VRAM, using only the measured
+`vram_bytes` (rows with the same name are added together within each sample; WSL host rows stay
+separate), with their peak GPU load. A process that never had measured bytes shows `n/a`. Lines that
+do not parse, such as a last line cut short, are skipped and counted.
+
+Because `record` appends, one file can hold several recordings, and `summary` reports each run on its own.
+A new run starts when the GPU or backend changes, when `taken` goes backwards (a clock change), or when
+two samples are further apart than ten times the file's median interval or 60 seconds, whichever is longer.
+A slow sample or two stays inside its run; recording again tomorrow into the same file is a second run.
+
+### Replaying a recording
+
+`replay` reads a file from `record` and shows it in the terminal. It does not sample the GPU, probe APIs, or write the file.
+
+```powershell
+uv run --locked gputaskman record -o session.jsonl --duration 60
+uv run --locked gputaskman replay session.jsonl
+```
+
+Playback starts paused on the first snapshot.
+
+| Key | Action |
+|---|---|
+| Space | Play / pause |
+| Right / Left | Next / previous snapshot |
+| Home / End | First / last snapshot |
+| `+` / `-` | Faster / slower: 0.5×, 1×, 2×, 4× (starts at 1×) |
+| `r` | Restart from the first snapshot and play |
+| `q` | Quit |
+
+The file is JSON Lines: each line is one `--json` snapshot, and `taken` is the sample time in Unix seconds. The screen shows that Unix time and, beside it, the same instant on this computer. When every snapshot has a finite `taken` and those times increase, play waits the recorded gap divided by the speed. The file does not store `--interval`. If a timestamp is missing or the times do not increase, play waits one second per snapshot at 1× and the screen says that interval is not recorded time. Play pauses on the last snapshot and does not loop. A long gap in `taken` (a recording that was stopped and later appended) is waited out; the arrow keys skip it.
+
+A last line cut short by a crash is skipped. Any other line that is not a snapshot is skipped and reported, and is not turned into a frame. An empty file, a missing file, or a file with no complete snapshot is an error. `null` device fields stay `N/A`. Process memory uses the recorded measured bytes, or the inferred bytes with the same `*` / `?` marks as the live view. Inferred rows are not added into the device total.
+
+`record` stores one GPU per snapshot. A file can still hold more than one when recordings were appended; the screen follows the snapshot on show and says how many GPUs the file contains. Replay does not draw the live history charts or the process inspector. It shows the file as it was when replay opened it, so samples appended later are not picked up until replay is started again. `gputaskman summary` reports the averages and peaks of a whole recording.
 
 ## How can it know what's inside?
 
@@ -806,10 +929,10 @@ reading is NVML's memory-activity percentage, **not measured bandwidth in GB/s**
 
 | Runtime | Current support |
 |---|---|
-| llama.cpp / llama-server | GGUF discovery, CLI settings, buffer logs, `/props` + `/v1/models` state; exercised live |
+| llama.cpp / llama-server | GGUF discovery, CLI settings, buffer logs, `/props` + `/v1/models` state, slots, and throughput; exercised live. New `/metrics` request and KV-cache pool gauges are runtime-reported and fixture-tested, **not validated live** |
 | Ollama | Bundled runners, mapped GGUF blobs named from Ollama manifests (`qwen3:14b`), parent `/api/ps`, compatible `server.log`; exercised live |
 | LM Studio | Mapped files named from its models folder, `/api/v1/models` (falls back to `/api/v0/models`); tested with fixture responses, not yet end to end |
-| vLLM | Recognized launch/worker signatures; `/v1/models` identifiers from an own listener or a verified parent, labelled API-reported, never worker residency or memory placement. Fixture-tested, including a real lightweight child process and HTTP listener; live Linux single-GPU and TP hardware **not validated** |
+| vLLM | Recognized launch/worker signatures; `/v1/models` identifiers from an own listener or a verified parent, labelled API-reported, never worker residency or memory placement. Running/waiting requests and KV-cache pool usage from `/metrics`, labelled runtime-reported for the server's engine, not per worker, per GPU or GPU memory. Fixture-tested, including a real lightweight child process and HTTP listener; live Linux single-GPU and TP hardware **not validated** |
 | Foundry Local | Recognized `foundrylocald` daemon; `/models/loaded` IDs from its own listener, labelled API-reported. No catalog-as-loaded fallback, model byte estimates or per-GPU placement claim. Live-checked with Foundry Local 0.14 on Snapdragon; see below |
 | stable-diffusion.cpp (`--diffusion-model`) | Diffusion, text-encoder and VAE files from launch arguments; no LLM memory breakdown |
 | Hugging Face cache | `models--org--repo` paths are named `org/repo` |
@@ -964,10 +1087,13 @@ Identification is designed to stay cheap. Measured on one Windows machine:
 | GGUF header, model-store manifests | ms, cached | Once per file / every 60 s |
 | Local API probes | ms, local only | llama-server `/v1/models` only when its model path changes |
 | vLLM `/v1/models` | 1.32 ms median, 21.36 ms max in 30 loopback fixture GETs; cached lookup ~0.0004 ms (Windows 11 build 28000, ARM64; no vLLM runtime/GPU workload) | One GET, 0.5 s timeout and 4 MiB response cap; success cached 3 s, misses/401 cached 30 s. No redirects; actual Linux/vLLM latency unmeasured |
+| vLLM `/metrics` gauges | Whole probe (`/v1/models` + `/metrics` + parse) 1.37 ms median, 1.44 ms max in 30 loopback runs; `/metrics` GET alone 0.48 ms median; parsing a constructed 49 KB, 511-line exposition (all counters, 16 histograms) 0.41 ms median (Fedora Linux 45, i7-10850H, Python 3.13.18; no vLLM runtime/GPU workload) | One extra keyless GET inside the same cached probe, only after `/v1/models` succeeds; same timeout, cap, no redirects. Real vLLM payload size and latency unmeasured |
 | Foundry Local `/models/loaded` | 7.37 ms median, 15.93 ms max in 10 warm reads; first read 9.04 ms (Windows 11 ARM64 build 28000.3231, Snapdragon X2 Elite / Adreno X2-85, driver 32.0.163.2, Foundry Local 0.14.0 with Phi-3.5-mini loaded) | One GET to the daemon's own listener, 0.5 s timeout and 4 MiB response cap; success cached 3 s, misses/401 cached 30 s. No redirects, catalog requests or inference |
 | `psutil.open_files()` | 0.6-2.5 s per process | Never |
 | AMD and Intel on Linux: DRM fdinfo scan (`readlink` every fd, read fdinfo of `/dev/dri` ones) | ~9 ms for ~8,000 fds (AMD, Linux desktop; Intel not measured) | Every refresh, only when an amdgpu or Intel card is shown; listing fds is bounded to 50 ms in the TUI and resumes next refresh, known GPU fds are still read |
+| AMD on WSL: AMD SMI discovery and device telemetry | Radeon 860M, WSL AMD SMI/ROCDXG 1.2.2, Windows driver 32.0.22050.1003: 71.87 ms first discovery; 30 warm device samples, median 6.27 ms, max 9.09 ms, no failures | Startup discovery and per-refresh telemetry; host attribution reuses the current `/dev/dxg` holder scan. Shared sessions keep later discovery/collectors from shutting down live handles; multiple physical adapters unmeasured |
 | Ascend on Linux: `npu-smi` | Contributor reports ~0.5 s per command on an Atlas 300I Duo; not independently measured | Discovery is cached for 120 s. Each selected chip runs one `info` and one `proc-mem` command every 10 s and owns a watch process; multiple selected chips add their synchronous command costs |
+| Xe primary-GT frequency/throttle | B65, Linux 7.0.0-43-generic, 2026-11-15, 100 successful reads: 0.037 ms median / 0.383 ms max; whole `read_device`: 0.194 / 0.533 ms | Selected card per refresh; three frequency reads plus aggregate throttle snapshot. Idle hardware check; legacy per-flag fallback and active reasons have fixture coverage only |
 | Intel on Linux: performance counters + RAPL uncore (root only) | ~0.04 ms for the counters, ~0.11 ms for RAPL per refresh on the Vivobook (30 reads each) | Every refresh, only when an Intel card is shown and the counters opened; first refresh arms the baselines |
 | macOS: `ioreg` device stats + Metal clients | ~10 ms | Every refresh |
 | macOS: memory-map scan (`proc_pidinfo` region walk) | ~4 ms per process | Same policy as the memory-map scan above |
@@ -1001,7 +1127,32 @@ gputaskman does not open a path taken from another process's command line, and a
 can't be seen from outside the process. In that case the probe stops at the first 401, so the server logs
 one rejected request every 30 seconds, and the inspector says why server details are missing.
 
-vLLM uses only `/v1/models`, with the same request bounds and cache intervals. Parent-discovered
+For llama-server, the existing `/metrics` request also reads `llamacpp:kv_cache_usage_ratio`,
+`llamacpp:requests_processing`, and `llamacpp:requests_deferred`. The text report and inspector label
+them runtime-reported for the server, not GPU-memory measurements. Running requests fall back to busy
+`/slots` when no valid processing gauge is available; `slots_busy` remains separately available.
+The new gauges have only been tested with fixture responses, not a live llama-server.
+
+The following `processes[].llm.server` JSON fields are shared by llama-server and vLLM, including in
+recordings. They are never added to measured memory totals:
+
+| Field | Meaning |
+|---|---|
+| `requests_running` | Runtime-reported nonnegative integer; llama-server may use the `/slots` fallback described above |
+| `requests_waiting` | Runtime-reported nonnegative integer from `/metrics` |
+| `kv_cache_usage` | Fraction from 0 to 1 of the runtime's KV-cache pool, **not GPU memory** |
+
+Unavailable or invalid gauges stay `null` (apart from the documented running-request fallback);
+a reported zero stays `0`. The pool fraction is displayed as a percentage.
+
+vLLM uses `/v1/models`, with the same request bounds and cache intervals. Only after that succeeds,
+the same probe sends one `GET /metrics`, **never with a key**, and reads three gauges:
+`vllm:num_requests_running`, `vllm:num_requests_waiting` and `vllm:kv_cache_usage_perc` (a 0-1
+fraction of vLLM's own KV-cache pool, shown as a percent; not GPU memory). They are accepted only
+when every sample names one `engine` and one `model_name`, and that name is one of the `/v1/models`
+IDs: vLLM labels metrics with the first `--served-model-name`, while `/v1/models` lists every alias.
+A reported 0 stays 0; a missing, duplicated, malformed or out-of-range value, or a refused or
+unreadable `/metrics`, stays unknown (`null`) without affecting the model IDs. Parent-discovered
 ports are **always unauthenticated**, even when parent and worker launch arguments match:
 the worker's key is never sent there. A 401 is shown as **Parent-process API locked**.
 Probe caches separate own/parent origins, process creation times, runtime and credentials, so
@@ -1137,6 +1288,8 @@ downloads are bundled in this repository.
 | `app.py` / `report.py` / `cli.py` | TUI, text/JSON, and command-line entry points |
 | `diff.py` | Before/after comparison of two `--json` snapshots |
 | `record.py` | `gputaskman record`: appends one `--json` snapshot per interval to a JSON Lines file |
+| `summary.py` | `gputaskman summary`: average and peak readings and top processes per run of a record file |
+| `replay.py` | `gputaskman replay`: offline playback of a `record` JSON Lines file |
 
 ## Next
 
@@ -1145,13 +1298,12 @@ downloads are bundled in this repository.
 - Reliable multi-GPU matching and per-device model placement.
 - NVIDIA TCC-mode GPUs: validation on TCC hardware, then per-process load and model breakdowns, which
   the Windows counters would supply for a WDDM GPU.
-- Intel `xe` per-process memory and load (`drm-cycles-*`), the Intel GT clock in the device panel, and Intel
-  validation beyond the Arc A770 / UHD 730 pair.
+- Intel `xe` device-wide telemetry and controlled-load/shared-buffer validation of its per-process
+  counters; Intel validation beyond the Arc A770 / UHD 730 pair.
 - macOS: a portable build, Ollama/llama.cpp/MLX validation, and compressed GPU memory (footprint's
   `swapped`) as the paged column.
 - WSL: per-process GPU load for Linux rows, and Ollama's systemd journal as a log source.
 - Live throughput deltas, LM Studio validation, and per-model context accounting.
-- Replay and summaries of a `gputaskman record` file; today any one line works with `diff`.
 - Opt-in ETW file-open tracing to name models loaded by read-and-close runtimes (any whisper or ONNX
   app), correlated with the process's VRAM jump at load time.
 - Data-driven app adapters (settings path plus load/unload log patterns) once a second app needs one.

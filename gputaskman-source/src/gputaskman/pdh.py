@@ -8,6 +8,7 @@ nvidia-smi/NVML report per-process memory as "N/A".
 from __future__ import annotations
 
 import ctypes
+import math
 import re
 from collections import defaultdict
 from ctypes import wintypes
@@ -16,6 +17,15 @@ from dataclasses import dataclass, field
 PDH_FMT_DOUBLE = 0x00000200
 PDH_FMT_NOCAP100 = 0x00008000
 PDH_MORE_DATA = 0x800007D2
+MAX_PROCESS_ENGINE_PERCENT = 1000.0
+ENGINE_UNAVAILABLE_REASON = (
+    "Windows per-process GPU engine counter was outside the supported 0-1000% range; "
+    "engine readings are unavailable for this sample."
+)
+
+
+def valid_engine_counter(value: float) -> bool:
+    return math.isfinite(value) and 0 <= value <= MAX_PROCESS_ENGINE_PERCENT
 
 
 class _Value(ctypes.Union):
@@ -73,6 +83,7 @@ class ProcGpu:
     committed: float = 0.0  # all GPU memory this process allocated, resident or not ("Total Committed")
     engines: dict[str, float] = field(default_factory=lambda: defaultdict(float))  # engtype -> util %
     available: set[str] = field(default_factory=lambda: {"dedicated", "shared", "committed", "engine"})
+    engine_reason: str = ""
 
     @property
     def paged_available(self) -> bool:
@@ -176,6 +187,8 @@ class GpuCounters:
             return {}, {}
         procs: dict[int, dict[int, ProcGpu]] = defaultdict(dict)
         engine_usage: dict[tuple[int, int, int], float] = defaultdict(float)
+        invalid_processes: set[tuple[int, int]] = set()
+        invalid_adapters: set[int] = set()
 
         def proc(luid: int, pid: int) -> ProcGpu:
             p = procs[luid].get(pid)
@@ -194,13 +207,27 @@ class GpuCounters:
             m = _ENGINE_RE.match(name)
             if m:
                 luid = luid_key(m[2], m[3])
-                p = proc(luid, int(m[1]))
-                p.engines[_norm_engine(m[6])] += val
-                p.available.add("engine")
-                engine_usage[(luid, int(m[4]), int(m[5]))] += val
+                pid = int(m[1])
+                engine_key = (luid, int(m[4]), int(m[5]))
+                if not valid_engine_counter(val):
+                    p = proc(luid, pid)
+                    p.engines.clear()
+                    p.available.discard("engine")
+                    p.engine_reason = ENGINE_UNAVAILABLE_REASON
+                    invalid_processes.add((luid, pid))
+                    invalid_adapters.add(luid)
+                    continue
+                if (luid, pid) not in invalid_processes:
+                    p = proc(luid, pid)
+                    p.engines[_norm_engine(m[6])] += val
+                    p.available.add("engine")
+                engine_usage[engine_key] += val
 
         adapters: dict[int, AdapterGpu] = defaultdict(AdapterGpu)
-        for (luid, _physical, _engine), usage in engine_usage.items():
+        for key, usage in engine_usage.items():
+            if key[0] in invalid_adapters:
+                continue
+            luid, _physical, _engine = key
             adapter = adapters[luid]
             usage = min(100.0, max(0.0, usage))
             adapter.util_gpu = max(adapter.util_gpu if adapter.util_gpu is not None else 0.0, usage)

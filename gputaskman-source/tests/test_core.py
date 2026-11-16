@@ -21,11 +21,13 @@ from rich.console import Console
 from rich.table import Table
 from textual.widgets import Footer, Select, Static
 
-from gputaskman.amdsmi import AmdSmi
+from gputaskman import amdsmi
+from gputaskman.amdsmi import AmdSmi, _read_vram_bytes
 from gputaskman.adl import Adl, _Metrics
 from gputaskman.app import GpuTaskManager, spark, stacked_bar
 from gputaskman.cli import main
-from gputaskman.collector import Collector, ProcRow, Snapshot, _llm_wanted, select_adapter, select_nv_device
+from gputaskman.collector import (Collector, ProcRow, Snapshot, _is_live, _llm_wanted, select_adapter,
+                                select_nv_device)
 from gputaskman.dxgi import Adapter
 from gputaskman.gguf import GgufInfo, read_gguf
 from gputaskman.handy import HandyEvidence, inspect_handy, _log_cache, _settings_cache
@@ -69,6 +71,26 @@ def snapshot() -> Snapshot:
 
 
 class CliTests(unittest.TestCase):
+    def test_wsl_list_gpus_explains_missing_stack_without_installing(self):
+        output, errors = io.StringIO(), io.StringIO()
+        with patch("sys.argv", ["gputaskman", "--list-gpus"]), \
+                patch("gputaskman.collector.BACKEND", "wsl"), \
+                patch("gputaskman.collector.enumerate_adapters", return_value=[]), \
+                patch("gputaskman.tcc.tcc_discovery_status", return_value=""), \
+                patch("subprocess.Popen") as popen, \
+                patch.object(amdsmi, "_discovery_status", ""), \
+                patch.object(amdsmi.importlib, "import_module", side_effect=ImportError("amdsmi missing")), \
+                patch.object(amdsmi.os.path, "isdir", return_value=False), \
+                contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+            self.assertIsNone(amdsmi._import_amdsmi())
+            main()
+            popen.assert_not_called()
+        self.assertEqual(output.getvalue(), "")
+        self.assertIn("amdsmi missing", errors.getvalue())
+        self.assertIn("rocdxg-amd-smi-lib", errors.getvalue())
+        self.assertIn("rocdxg-roct", errors.getvalue())
+        self.assertIn("never installs", errors.getvalue())
+
     def test_invalid_options_fail_before_collecting(self):
         for args in (["--gpu", "-1"], ["-i", "0"], ["-i", "-1"],
                      ["-i", "nan"], ["-i", "inf"]):
@@ -186,6 +208,180 @@ class DeviceSelectionTests(unittest.TestCase):
         self.assertIsNone(provider.sample())
         provider.close()
 
+    @patch("gputaskman.amdsmi.sys.platform", "linux")
+    def test_amdsmi_prefers_memory_usage_over_uninitialized_rocm_wsl_vram_usage(self):
+        amd = Adapter(1, "AMD Radeon RX 7900 XTX", 0x1002, 24 * GiB, 0, False, (3, 0, 0))
+        api = SimpleNamespace(
+            amdsmi_init=lambda: None, amdsmi_shut_down=lambda: None,
+            amdsmi_get_processor_handles=lambda: ["h0"],
+            amdsmi_get_gpu_device_bdf=lambda h: "0000:03:00.0",
+            amdsmi_get_gpu_driver_info=lambda h: {"driver_version": "26.20.15.07"},
+            AmdSmiMemoryType=SimpleNamespace(VRAM=1),
+            amdsmi_get_gpu_memory_total=lambda h, t: 24 * GiB,
+            amdsmi_get_gpu_memory_usage=lambda h, t: 4 * GiB,
+            amdsmi_get_gpu_vram_usage=lambda h: {"vram_total": 24576, "vram_used": 446623},
+            amdsmi_get_gpu_activity=lambda h: {"gfx_activity": 21, "umc_activity": 0},
+            amdsmi_get_power_info=lambda h: {"socket_power": "N/A", "power_limit": 0},
+            amdsmi_get_gpu_metrics_info=lambda h: {"current_socket_power": 38, "average_socket_power": 11},
+            amdsmi_get_power_cap_info=lambda h, i: {"power_cap": 430_000_000},
+        )
+        provider = AmdSmi(amd, [amd], api)
+        sample = provider.sample()
+        self.assertEqual((sample.mem_total, sample.mem_used), (24 * GiB, 4 * GiB))
+        self.assertEqual((sample.power_w, sample.power_limit_w, sample.power_kind), (38, 430.0, "socket"))
+        provider.close()
+
+    def test_amdsmi_unreliable_vram_fallback_requires_a_total(self):
+        for total, used, expected in ((None, 435000, (None, None)),
+                                      (24576, 435000, (24 * GiB, None)),
+                                      (24576, 4096, (24 * GiB, 4 * GiB)),
+                                      (24576, 0, (24 * GiB, 0))):
+            api = SimpleNamespace(
+                amdsmi_get_gpu_vram_usage=lambda h: {"vram_total": total, "vram_used": used})
+            with self.subTest(total=total, used=used):
+                self.assertEqual(_read_vram_bytes(api, "gpu"), expected)
+
+    def test_amdsmi_rechecks_usage_against_a_fallback_total(self):
+        api = SimpleNamespace(
+            AmdSmiMemoryType=SimpleNamespace(VRAM=1),
+            amdsmi_get_gpu_memory_total=lambda h, t: 0,
+            amdsmi_get_gpu_memory_usage=lambda h, t: 400 * GiB,
+            amdsmi_get_gpu_vram_usage=lambda h: {"vram_total": 24576, "vram_used": 4096})
+        self.assertEqual(_read_vram_bytes(api, "gpu"), (24 * GiB, None))
+
+    def test_wsl_never_uses_uninitialized_fallback_even_if_it_looks_plausible(self):
+        api = SimpleNamespace(
+            AmdSmiMemoryType=SimpleNamespace(VRAM=1),
+            amdsmi_get_gpu_memory_total=lambda h, t: 512 * MiB,
+            amdsmi_get_gpu_memory_usage=Mock(return_value=540 * MiB),
+            amdsmi_get_gpu_vram_usage=Mock(return_value={"vram_total": 512, "vram_used": 501}))
+        self.assertEqual(_read_vram_bytes(api, "gpu", wsl=True), (512 * MiB, None))
+        api.amdsmi_get_gpu_vram_usage.assert_not_called()
+        api.amdsmi_get_gpu_memory_usage.return_value = 0
+        self.assertEqual(_read_vram_bytes(api, "gpu", wsl=True), (512 * MiB, 0))
+
+    @patch("gputaskman.amdsmi.sys.platform", "linux")
+    def test_amdsmi_unsupported_sensor_and_power_cap_do_not_hide_valid_zeros(self):
+        amd = Adapter(1, "AMD", 0x1002, GiB, 0, False, (3, 0, 0))
+        api = SimpleNamespace(
+            amdsmi_init=lambda: None, amdsmi_shut_down=lambda: None,
+            amdsmi_get_processor_handles=lambda: ["gpu"],
+            amdsmi_get_gpu_device_bdf=lambda h: "0000:03:00.0",
+            amdsmi_get_power_info=lambda h: {"current_socket_power": 0, "average_socket_power": 10},
+            amdsmi_get_power_cap_info=Mock(),
+            AmdSmiTemperatureType=SimpleNamespace(EDGE=1),
+            AmdSmiTemperatureMetric=SimpleNamespace(CURRENT=1, CRITICAL=2),
+            amdsmi_get_temp_metric=Mock(return_value=0))
+        provider = AmdSmi(amd, [amd], api)
+        self.addCleanup(provider.close)
+        for cap in ((1 << 32) - 1, (1 << 64) - 1):
+            api.amdsmi_get_power_cap_info.return_value = {"power_cap": cap}
+            sample = provider.sample()
+            self.assertIsNone(sample.temp)
+            self.assertIsNone(sample.power_limit_w)
+            self.assertEqual(sample.power_w, 0)
+            self.assertIn("temperature is unsupported", provider.status)
+        api.amdsmi_get_temp_metric.side_effect = lambda h, sensor, metric: 90 if metric == 2 else 0
+        api.amdsmi_get_power_cap_info.return_value = {"power_cap": 5000}
+        sample = provider.sample()
+        self.assertEqual(sample.temp, 0)
+        self.assertEqual(sample.power_limit_w, 0.005)
+
+    def test_amdsmi_discovery_and_other_collectors_do_not_shutdown_live_handles(self):
+        from gputaskman.linux import _amdsmi_adapters
+
+        gpus = [Adapter(i, "AMD", 0x1002, GiB, 0, False, (i, 0, 0)) for i in (3, 4)]
+        running = False
+        def initialize():
+            nonlocal running
+            running = True
+        def shutdown():
+            nonlocal running
+            running = False
+        def activity(h):
+            if not running:
+                raise RuntimeError("uninitialized")
+            return {"gfx_activity": 42}
+        api = SimpleNamespace(
+            amdsmi_init=Mock(side_effect=initialize), amdsmi_shut_down=Mock(side_effect=shutdown),
+            amdsmi_get_processor_handles=lambda: [3, 4],
+            amdsmi_get_gpu_device_bdf=lambda h: f"0000:0{h}:00.0",
+            amdsmi_get_gpu_activity=activity)
+        first = AmdSmi(gpus[0], gpus, api)
+        second = AmdSmi(gpus[1], gpus, api)
+        self.addCleanup(first.close)
+        self.addCleanup(second.close)
+        with patch("gputaskman.amdsmi._import_amdsmi", return_value=api), \
+                patch("gputaskman.linux.os.path.exists", return_value=True):
+            self.assertEqual(len(_amdsmi_adapters()), 2)
+        self.assertEqual(first.sample().util_gpu, 42)
+        second.close()
+        self.assertEqual(first.sample().util_gpu, 42)
+        api.amdsmi_init.assert_called_once()
+        api.amdsmi_shut_down.assert_not_called()
+        first.close()
+        api.amdsmi_shut_down.assert_called_once()
+
+    def test_amdsmi_rejects_mismatched_wrapper_and_library_with_reason(self):
+        amd = Adapter(1, "AMD", 0x1002, GiB, 0, False, (3, 0, 0))
+        api = SimpleNamespace(
+            __version__="1.2.2", amdsmi_init=Mock(), amdsmi_shut_down=Mock(),
+            amdsmi_get_lib_version=lambda: {"major": 26, "minor": 5, "release": 0})
+        with patch("gputaskman.amdsmi.os.path.exists", return_value=True):
+            provider = AmdSmi(amd, [amd], api)
+        self.assertIsNone(provider.sample())
+        self.assertIn("different major versions", provider.status)
+        self.assertIn("matching WSL AMD SMI", provider.status)
+        api.amdsmi_shut_down.assert_called_once()
+
+    def test_amdsmi_import_failure_does_not_corrupt_json_stdout(self):
+        def load(_):
+            print("vendor library loader error")
+            raise OSError("library missing")
+        output = io.StringIO()
+        with patch.object(amdsmi, "_discovery_status", ""), \
+                patch.object(amdsmi.importlib, "import_module", side_effect=load), \
+                patch.object(amdsmi.os.path, "isdir", return_value=False), \
+                contextlib.redirect_stdout(output):
+            self.assertIsNone(amdsmi._import_amdsmi())
+            self.assertIn("library missing", amdsmi.amdsmi_status())
+        self.assertEqual(output.getvalue(), "")
+
+    def test_amdsmi_discovery_explains_missing_dxg_bridge_and_unsupported_hardware(self):
+        from gputaskman.linux import _amdsmi_adapters
+
+        with patch.object(amdsmi, "_discovery_status", ""), \
+                patch("gputaskman.linux.os.path.exists", return_value=False), \
+                patch.object(amdsmi, "_import_amdsmi") as load:
+            self.assertEqual(_amdsmi_adapters(), [])
+            self.assertIn("/dev/dxg", amdsmi.amdsmi_status())
+            load.assert_not_called()
+        api = SimpleNamespace(
+            amdsmi_init=Mock(), amdsmi_shut_down=Mock(), amdsmi_get_processor_handles=lambda: [])
+        with patch.object(amdsmi, "_discovery_status", ""), \
+                patch("gputaskman.linux.os.path.exists", return_value=True), \
+                patch.object(amdsmi, "_import_amdsmi", return_value=api):
+            self.assertEqual(_amdsmi_adapters(), [])
+            self.assertIn("no usable WSL GPU", amdsmi.amdsmi_status())
+            api.amdsmi_init.side_effect = RuntimeError("ROCDXG bridge unavailable")
+            self.assertEqual(_amdsmi_adapters(), [])
+            self.assertIn("ROCDXG bridge unavailable", amdsmi.amdsmi_status())
+            self.assertIn("rocdxg-roct", amdsmi.amdsmi_status())
+
+    def test_amdsmi_discovery_skips_bad_and_ambiguous_pci_identities(self):
+        from gputaskman.linux import _amdsmi_adapters
+
+        api = SimpleNamespace(
+            amdsmi_init=lambda: None, amdsmi_shut_down=lambda: None,
+            amdsmi_get_processor_handles=lambda: [0, 1, 2, 3],
+            amdsmi_get_gpu_device_bdf=lambda h: ["bad", "0000:03:00.0", "0000:03:00.0", "0000:04:00.0"][h])
+        with patch.object(amdsmi, "_discovery_status", ""), \
+                patch("gputaskman.linux.os.path.exists", return_value=True), \
+                patch.object(amdsmi, "_import_amdsmi", return_value=api):
+            adapters = _amdsmi_adapters()
+            self.assertEqual([a.pci_address for a in adapters], [(4, 0, 0)])
+            self.assertIn("duplicate PCI addresses", amdsmi.amdsmi_status())
+
     def test_mixed_vendor_adapters_are_selectable(self):
         amd = Adapter(2, "AMD GPU", 0x1002, 24 * GiB, 0, False)
         nvidia = Adapter(1, "NVIDIA GPU", 0x10DE, 8 * GiB, 0, False)
@@ -228,6 +424,28 @@ class DeviceSelectionTests(unittest.TestCase):
 
 
 class MemoryTests(unittest.TestCase):
+    def test_missing_wsl_stack_is_unknown_with_reason_in_text_json_and_ui(self):
+        c = Collector.__new__(Collector)
+        c.adapter, c.adapters = None, []
+        c.gpu_index, c.scan_budget, c.host, c.host_status = 0, None, None, ""
+        c.nvml = Mock(ok=False)
+        c.amdsmi = Mock(status="")
+        c.counters = Mock(outside={})
+        c.counters.sample.return_value = ({}, {})
+        c.inspector, c.prober = Mock(), Mock()
+        reason = "AMD SMI unavailable; install matching WSL AMD SMI and ROCDXG packages yourself."
+        with patch("gputaskman.collector.BACKEND", "wsl"), \
+                patch("gputaskman.collector.amdsmi_status", return_value=reason):
+            s = c.sample()
+        self.assertIsNone(s.attributed)
+        self.assertIsNone(s.vram_used)
+        self.assertEqual(to_dict(s)["counter_status"], reason)
+        self.assertIsNone(to_dict(s)["attributed"])
+        self.assertIn(reason, to_text(s))
+        output = io.StringIO()
+        Console(file=output, width=160).print(GpuTaskManager().render_device(s))
+        self.assertIn("AMD SMI unavailable", output.getvalue())
+
     def test_windows_counter_luid_mismatch_is_not_attributed_to_selected_adapter(self):
         c = Collector.__new__(Collector)
         c.adapter = Adapter(0x4bb7, "GPU", 0x10DE, 16 * GiB, 0, False)
@@ -343,6 +561,13 @@ class MemoryTests(unittest.TestCase):
         self.assertIn("VRAM 0 MB / 128 MB", text)
         self.assertIn("SHARED", text)
         self.assertIn("shared (in system RAM) 776 MB", text)
+        self.assertIn("GPU 42%  (Windows does not report temperature, power, clocks or PCIe", text)
+        self.assertNotIn("SM N/A", text)
+        output = io.StringIO()
+        Console(file=output, width=160).print(GpuTaskManager().render_device(s))
+        self.assertIn("GPU 42%", output.getvalue())
+        self.assertIn("Windows does not report temperature", output.getvalue())
+        self.assertNotIn("N/A", output.getvalue())
 
     def test_qualcomm_wddm_reports_shared_memory_and_engine_activity(self):
         memory = 45 * GiB
@@ -495,6 +720,36 @@ class MemoryTests(unittest.TestCase):
         self.assertEqual(gpu.gpu_pct, 10)
         self.assertFalse(gpu.paged_available)
 
+    def test_invalid_engine_counter_makes_process_unknown_but_keeps_ordinary_overshoot(self):
+        counters = GpuCounters.__new__(GpuCounters)
+        counters._query = None
+        data = {"engine": [
+            ("pid_42_luid_0x0_0x1_phys_0_eng_0_engtype_3D", 18_465_941_443_552.6),
+            ("pid_42_luid_0x0_0x1_phys_0_eng_1_engtype_Compute", 50.0),
+            ("pid_43_luid_0x0_0x1_phys_0_eng_0_engtype_3D", 312.0),
+            ("pid_44_luid_0x0_0x2_phys_0_eng_2_engtype_Compute", 150.0),
+            ("pid_45_luid_0x0_0x3_phys_0_eng_3_engtype_3D", float("nan")),
+            ("pid_46_luid_0x0_0x3_phys_0_eng_4_engtype_3D", -1.0),
+            ("pid_47_luid_0x0_0x3_phys_0_eng_5_engtype_3D", 1000.1),
+            ("pid_48_luid_0x0_0x3_phys_0_eng_6_engtype_3D", 1000.0),
+        ]}
+        with patch.object(counters, "_read", side_effect=lambda key: data.get(key, [])), \
+                patch("gputaskman.pdh._pdh", SimpleNamespace(PdhCollectQueryData=lambda query: 0)):
+            processes, adapters = counters.sample()
+        invalid = processes[1][42]
+        self.assertEqual(invalid.engines, {})
+        self.assertNotIn("engine", invalid.available)
+        self.assertIn("outside the supported 0-1000% range", invalid.engine_reason)
+        self.assertTrue(_is_live(invalid))
+        for pid in (45, 46, 47):
+            self.assertNotIn("engine", processes[3][pid].available)
+        self.assertEqual(processes[3][48].gpu_pct, 1000.0)
+        self.assertEqual(processes[1][43].engines["3d"], 312.0)
+        self.assertEqual(processes[1][43].gpu_pct, 312.0)
+        self.assertIsNone(adapters[1].util_gpu)
+        self.assertEqual(adapters[2].util_gpu, 100.0)
+        self.assertIsNone(adapters[3].util_gpu)
+
     def test_wddm_adapter_utilization_uses_busiest_combined_engine(self):
         counters = GpuCounters.__new__(GpuCounters)
         counters._query = None
@@ -512,10 +767,12 @@ class MemoryTests(unittest.TestCase):
     def test_missing_process_counters_are_not_reported_as_zero(self):
         s = snapshot()
         s.procs[0].gpu.available = {"dedicated"}
+        s.procs[0].gpu.engine_reason = "Windows per-process GPU engine counter unavailable."
         row = to_dict(s)["processes"][0]
         self.assertEqual(row["vram_bytes"], 8 * GiB)
         for name in ("shared_bytes", "committed_bytes", "paged_out_bytes", "gpu_pct", "engines"):
             self.assertIsNone(row[name])
+        self.assertEqual(row["engine_unavailable_reason"], s.procs[0].gpu.engine_reason)
         self.assertIn("N/A", to_text(s))
         s.procs[0].gpu.available.clear()
         self.assertIsNone(to_dict(s)["attributed"])
@@ -712,6 +969,21 @@ class HandyTests(unittest.TestCase):
         self.assertIn("Handy last log (loaded): model.gguf", s.procs[0].inside)
         self.assertIn("not current GPU residency", to_text(s))
         self.assertEqual(to_dict(s)["processes"][0]["handy"]["last_event"], "loaded")
+
+    def test_handy_evidence_paths_are_truncated_to_filename(self):
+        for path in (r"C:\Users\Handy\models\whisper.bin", "/models/whisper.bin", "whisper.bin"):
+            with self.subTest(path=path):
+                last_log = ProcRow(
+                    10, "handy.exe", "AI", ProcGpu(dedicated=GiB), ProcDetail(10, "handy.exe"),
+                    handy=HandyEvidence(last_model=path, last_event="loaded"),
+                )
+                self.assertEqual(last_log.inside, "Handy last log (loaded): whisper.bin")
+
+                selected = ProcRow(
+                    10, "handy.exe", "AI", ProcGpu(dedicated=GiB), ProcDetail(10, "handy.exe"),
+                    handy=HandyEvidence(selected_model=path),
+                )
+                self.assertEqual(selected.inside, "Handy selected (not load proof): whisper.bin")
 
 
 class PathArgumentTests(unittest.TestCase):
@@ -1313,6 +1585,103 @@ class IdentityTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
 
+    def test_llama_server_metrics_and_kv_cache(self):
+        import http.server
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                if self.path == "/props":
+                    body = json.dumps({"model_path": "/m/test.gguf", "total_slots": 4,
+                                       "default_generation_settings": {"n_ctx": 8192}}).encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(body)
+                elif self.path == "/slots":
+                    body = json.dumps([{"id": 0, "is_processing": True}, {"id": 1, "is_processing": False},
+                                       {"id": 2, "is_processing": False}, {"id": 3, "is_processing": False}]).encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(body)
+                elif self.path == "/metrics":
+                    text = ("llamacpp:prompt_tokens_seconds 150.0\n"
+                            "llamacpp:predicted_tokens_seconds 35.5\n"
+                            "llamacpp:kv_cache_usage_ratio 0.425\n"
+                            "llamacpp:requests_processing 1\n"
+                            "llamacpp:requests_deferred 2\n")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/plain")
+                    self.end_headers()
+                    self.wfile.write(text.encode())
+                elif self.path == "/v1/models":
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(b'{"data": []}')
+                else:
+                    self.send_response(404)
+                    self.end_headers()
+
+            def log_message(self, *args):
+                pass
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        port = server.server_address[1]
+        try:
+            s = probe_server(port)
+            self.assertIsNotNone(s)
+            self.assertEqual(s.kind, "llama-server")
+            self.assertEqual(s.n_ctx, 8192)
+            self.assertEqual(s.slots_total, 4)
+            self.assertEqual(s.slots_busy, 1)
+            self.assertEqual(s.prompt_tok_s, 150.0)
+            self.assertEqual(s.gen_tok_s, 35.5)
+            self.assertAlmostEqual(s.kv_cache_usage, 0.425)
+            self.assertEqual(s.requests_running, 1)
+            self.assertEqual(s.requests_waiting, 2)
+            snap = snapshot()
+            attributed = snap.attributed
+            row = snap.procs[0]
+            row.llm = build_view(row.detail, row.gpu.dedicated, row.gpu.shared, s)
+            text = to_text(snap)
+            self.assertIn("llama-server (runtime-reported): requests running 1, waiting 2, "
+                          "KV-cache pool 42.5%", text)
+            self.assertIn("not of GPU memory", text)
+            self.assertEqual(snap.attributed, attributed)
+            reported = to_dict(snap)["processes"][0]["llm"]["server"]
+            self.assertEqual((reported["requests_running"], reported["requests_waiting"],
+                              reported["kv_cache_usage"]), (1, 2, 0.425))
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_llama_server_gauges_keep_zero_and_reject_invalid_values(self):
+        for value, expected in (("0", (0, 0, 0.0)), ("2", (2, 2, None)),
+                                ("1.5", (None,) * 3), ("-1", (None,) * 3),
+                                ("-inf", (None,) * 3), ("NaN", (None,) * 3),
+                                ("1e309", (None,) * 3), ("abc", (None,) * 3)):
+            metrics = "\n".join(f"llamacpp:{name} {value}" for name in
+                                ("requests_processing", "requests_deferred", "kv_cache_usage_ratio"))
+            with self.subTest(value=value), patch("gputaskman.llm._get",
+                    side_effect=[{"model_path": None}, {"data": []}, None, metrics]):
+                server = probe_server(8080)
+            self.assertEqual((server.requests_running, server.requests_waiting, server.kv_cache_usage),
+                             expected)
+
+    def test_llama_server_running_requests_fall_back_to_slots_not_zero(self):
+        for metrics, expected in ((None, 1), ("llamacpp:requests_processing -inf", 1),
+                                  ("llamacpp:requests_processing 0", 0)):
+            with self.subTest(metrics=metrics), patch("gputaskman.llm._get",
+                    side_effect=[{"model_path": None}, {"data": []},
+                                 [{"is_processing": True}], metrics]):
+                server = probe_server(8080)
+            self.assertEqual(server.slots_busy, 1)
+            self.assertEqual(server.requests_running, expected)
+            self.assertIsNone(server.requests_waiting)
+            self.assertIsNone(server.kv_cache_usage)
+
     def test_api_key_is_not_forwarded_by_a_redirect(self):
         import http.server
         seen: dict[str, list[str | None]] = {"first": [], "other": []}
@@ -1596,6 +1965,24 @@ class UiTests(unittest.IsolatedAsyncioTestCase):
         output = io.StringIO()
         Console(file=output, width=widget.content_size.width, color_system=None).print(widget.content)
         return output.getvalue()
+
+    async def test_llama_server_gauges_label_runtime_pool_in_inspector(self):
+        snap = snapshot()
+        row = snap.procs[0]
+        server = ServerInfo("llama-server", "http://127.0.0.1:8080",
+                            requests_running=0, requests_waiting=0, kv_cache_usage=0.0)
+        row.llm = build_view(row.detail, row.gpu.dedicated, row.gpu.shared, server)
+        with patch.object(GpuTaskManager, "poll"):
+            app = GpuTaskManager()
+            app.selected_key = "10"
+            async with app.run_test(size=(180, 50)) as pilot:
+                app.apply(snap)
+                await pilot.pause()
+                text = "\n".join(getattr(line, "plain", "") for line in
+                                 app.query_one("#inspector", Static).content.renderables)
+                self.assertIn("llama-server (runtime-reported): requests running 0, waiting 0, "
+                              "KV-cache pool 0.0%", text)
+                self.assertIn("not of GPU memory", text)
 
     async def test_monitoring_toggle_hides_diagnostics_without_changing_live_state(self):
         s = snapshot()
@@ -2133,5 +2520,19 @@ class UiTests(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(app.paused)
 
 
-if __name__ == "__main__":
-    unittest.main()
+
+class FormatMetricTests(unittest.TestCase):
+    """Device metrics render as integers by default; explicit specs and the JSON path are unaffected."""
+
+    def test_intel_style_float_shows_no_decimals(self):
+        from gputaskman.nvml import format_metric
+
+        self.assertEqual(format_metric(98.06775140236023, unit="%"), "98%")
+
+    def test_explicit_spec_and_n_none_untouched(self):
+        from gputaskman.nvml import format_metric
+
+        self.assertEqual(format_metric(98.06775140236023, ".1f", "%"), "98.1%")  # caller asked for a decimal
+        self.assertEqual(format_metric(3, unit="C"), "3C")  # int stays int
+        self.assertEqual(format_metric(None), "N/A")
+

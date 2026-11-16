@@ -20,9 +20,9 @@ The full LGPLv3 and GPLv3 texts (the latter incorporated by LGPLv3) are included
 build/generation tools, including their separately licensed portions.
 
 **Corresponding sources are available alongside the DEB at the same release:**
-https://github.com/nojan01/gputaskman-qt6/releases/tag/v0.4.1
+https://github.com/nojan01/gputaskman-qt6/releases/tag/v0.4.3
 
-Download `gputaskman-qt6_0.4.1_third-party-sources.tar` and verify `SHA256SUMS`.
+Download `gputaskman-qt6_0.4.3_third-party-sources.tar` and verify `SHA256SUMS`.
 It contains the unmodified official PySide/Shiboken source, QtBase, QtSvg,
 QtWayland 6.8.3 sources and ICU 73.2 source. Original download URLs and per-file
 hashes are recorded in `third-party/sources.json`. We do not modify Qt/PySide.
@@ -41,7 +41,7 @@ For a user-writable copy without modifying `/opt`:
 ```sh
 mkdir unpacked
 cd unpacked
-dpkg-deb -x ../gputaskman-qt6_0.4.1-1_amd64.deb .
+dpkg-deb -x ../gputaskman-qt6_0.4.3-1_amd64.deb .
 # Replace ABI-compatible Qt/PySide/Shiboken shared libraries under opt/ here.
 ./opt/gputaskman-qt6/gui/gputaskman-qt6 --demo
 ```

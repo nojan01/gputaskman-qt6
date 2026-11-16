@@ -21,7 +21,10 @@ import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 
-from .pdh import _ADAPTER_RE, _ENGINE_RE, _PROC_RE, AdapterGpu, ProcGpu, _norm_engine, luid_key
+from .pdh import (
+    ENGINE_UNAVAILABLE_REASON, _ADAPTER_RE, _ENGINE_RE, _PROC_RE, AdapterGpu, ProcGpu,
+    _norm_engine, luid_key, valid_engine_counter,
+)
 
 _POWERSHELL_FALLBACK = "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
 
@@ -146,6 +149,7 @@ def parse_line(line: str, now: float | None = None) -> HostSample | None:
     procs: dict[int, dict[int, ProcGpu]] = defaultdict(dict)
     adapters: dict[int, AdapterGpu] = defaultdict(AdapterGpu)
     contexts: dict[int, dict[int, list[float]]] = defaultdict(lambda: defaultdict(list))
+    invalid_processes: set[tuple[int, int]] = set()
     for row in data.get("s") or []:
         try:
             counter, instance, value = str(row[0]).lower(), str(row[1]).lower(), float(row[2])
@@ -154,8 +158,15 @@ def parse_line(line: str, now: float | None = None) -> HostSample | None:
         if counter == "utilization percentage":
             m = _ENGINE_RE.match(instance)
             if m:
-                g = procs[luid_key(m[2], m[3])].setdefault(int(m[1]), ProcGpu())
-                g.engines[_norm_engine(m[6])] += value
+                luid, pid = luid_key(m[2], m[3]), int(m[1])
+                g = procs[luid].setdefault(pid, ProcGpu())
+                if not valid_engine_counter(value):
+                    g.engines.clear()
+                    g.available.discard("engine")
+                    g.engine_reason = ENGINE_UNAVAILABLE_REASON
+                    invalid_processes.add((luid, pid))
+                elif (luid, pid) not in invalid_processes:
+                    g.engines[_norm_engine(m[6])] += value
         elif counter in _PROC_FIELDS:
             m = _PROC_RE.match(instance)
             if m:

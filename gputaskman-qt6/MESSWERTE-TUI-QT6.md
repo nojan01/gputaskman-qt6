@@ -1,3 +1,5 @@
+Aktualisierung 16. November 2026: Qt 0.4.3 verwendet jetzt den unveränderten Upstream-Collector 0.4.3. Die eingefrorene lokale TUI bleibt unverändert. Die folgenden Angaben beschreiben den historischen Vergleich vor diesem Update.
+
 # Messwerte: Vergleich zwischen TUI und Qt-6-Oberfläche
 
 Stand: 14. November 2026. Verglichen wurden die lokale **TUI 0.4.1-8compact1**

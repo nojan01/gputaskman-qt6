@@ -10,7 +10,7 @@ import tempfile
 here=Path(__file__).resolve().parent
 workspace=here.parent
 out=here/'release';out.mkdir(exist_ok=True)
-version='0.4.1-1'
+version='0.4.3-1'
 source_archive=out/f'gputaskman-qt6_{version}_source.tar.gz'
 with tarfile.open(source_archive,'w:gz') as archive:
     for folder in [here,workspace/'gputaskman-source']:
@@ -97,7 +97,7 @@ Depends: libc6 (>= 2.38), fonts-dejavu-core, libstdc++6 (>= 12), libgcc-s1, pkex
 Recommends: fonts-dejavu-core
 Homepage: https://github.com/nojan01/gputaskman-qt6
 Description: Qt 6 GPU telemetry and process monitor
- Separate graphical frontend with dark charts and an original interface. Uses gputaskman 0.4.1 for read-only local telemetry.
+ Separate graphical frontend with dark charts and an original interface. Uses gputaskman 0.4.3 for read-only local telemetry.
  Only the collector is elevated via Polkit; the window stays unprivileged.
  The existing gputaskman TUI is not modified or replaced.
 ''')

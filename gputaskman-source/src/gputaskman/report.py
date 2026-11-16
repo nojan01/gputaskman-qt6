@@ -7,7 +7,7 @@ import json
 import os
 
 from .collector import ProcRow, Snapshot
-from .llm import gb
+from .llm import gb, server_gauge_text
 from .nvml import format_metric
 from .pdh import ProcGpu
 
@@ -44,10 +44,14 @@ def has_engine_counters(s: Snapshot, row: ProcRow) -> bool:
     return (s.backend != "wsl" or row.origin == "windows") and "engine" in row.gpu.available
 
 
+def vram_mark(inferred_by: object) -> str:
+    """'*' / '?' for an inferred owner; anything else (including a malformed recorded value) is unmarked."""
+    return {"order": "?", "consistent": "*"}.get(inferred_by, "") if isinstance(inferred_by, str) else ""
+
+
 def vram_label(g: ProcGpu) -> str:
     """Measured size; '*' / '?' when the size is exact but which local process owns it is inferred."""
-    mark = {"order": "?", "consistent": "*"}.get(g.inferred_by, "")
-    return "n/a" if g.shown_vram is None else gb(g.shown_vram) + mark
+    return "n/a" if g.shown_vram is None else gb(g.shown_vram) + vram_mark(g.inferred_by)
 
 
 INFERRED_NOTE = ("* matched: the size is exact (Windows' counter for a WSL VM GPU context, or NVML for a host PID "
@@ -89,12 +93,9 @@ def inferred_note(g) -> str:
 METAL_NOTE = ("macOS: unified memory, so GPU memory is part of system RAM. Rows show each process's graphics "
               "footprint; other users' processes (WindowServer, daemons) show GPU% only, since reading their "
               "memory needs root.")
-INTEL_MEMORY_NOTE = ("Intel VRAM used is the sum of memory resident in the processes gputaskman can inspect "
-                     "(the driver has no device-wide counter): local memory on a discrete card, system memory on "
-                     "an integrated GPU. Buffers shared between processes can be counted twice, and kernel-owned "
-                     "memory and processes it can't inspect are missing. The total is the size of the card's "
-                     "local-memory PCI window, an estimate that can differ from its memory (0 on an integrated "
-                     "GPU, whose total is unknown), so free memory is not shown.")
+INTEL_MEMORY_NOTE = ("Intel: used is a sum over inspectable processes (no device counter); "
+                     "total is the PCI window size, an estimate. Free is not shown.")
+WDDM_DEVICE_NOTE = "Windows does not report temperature, power, clocks or PCIe for this GPU."
 
 
 def intel_memory_note(s: Snapshot) -> str:
@@ -131,6 +132,7 @@ def to_dict(s: Snapshot) -> dict:
             "paged_out_bytes": int(p.gpu.paged_out) if wddm and p.gpu.paged_available else None,
             "gpu_pct": round(p.gpu.gpu_pct, 1) if engines else None,
             "engines": {k: round(v, 1) for k, v in p.gpu.engines.items() if v} if engines else None,
+            "engine_unavailable_reason": p.gpu.engine_reason or None,
             "ports": p.detail.ports, "inside": p.inside,
             "model_files": [dataclasses.asdict(m) for m in p.detail.models],
             "installed_models": [dataclasses.asdict(m) for m in p.detail.candidates],
@@ -196,7 +198,9 @@ def to_text(s: Snapshot, limit: int = 30) -> str:
         out.append(intel_memory_note(s))
     if s.counter_status:
         out.append(s.counter_status)
-    if nv and s.backend != "metal":
+    if nv and nv.source == "Windows WDDM":
+        out.append(f"GPU {format_metric(nv.util_gpu, unit='%')}  ({WDDM_DEVICE_NOTE})")
+    elif nv and s.backend != "metal":
         rx = nv.pcie_rx_kbs / 1024 if nv.pcie_rx_kbs is not None else None
         tx = nv.pcie_tx_kbs / 1024 if nv.pcie_tx_kbs is not None else None
         pstate = f"P{nv.pstate}" if nv.pstate is not None else "P N/A"
@@ -282,6 +286,8 @@ def to_text(s: Snapshot, limit: int = 30) -> str:
             if sv.kind in ("vllm", "foundry-local"):
                 for m in sv.models:
                     out.append(f"   API-reported model ID: {m['name']}")
+            if gauges := server_gauge_text(sv):
+                out.append(f"   {gauges}")
         if p.llm.log_source:
             out.append(f"   exact sizes from log: {p.llm.log_source}")
         for n in p.llm.notes:

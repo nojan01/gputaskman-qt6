@@ -166,3 +166,17 @@ class RefreshGuiTests(unittest.TestCase):
         window.proc=None;window.close();app.processEvents()
 
 if __name__=='__main__':unittest.main()
+
+class RuntimeGaugeTests(unittest.TestCase):
+    def test_server_metrics_preserve_zero_and_unknown(self):
+        w=Window(demo=True);w.demo_timer.stop()
+        try:
+            frame=demo_message(time.time(),1)
+            frame['snapshot']['processes'][0]['llm']={'server':{'requests_running':0,'requests_waiting':None,'kv_cache_usage':0.25}}
+            w.receive(frame);w.navigate(2)
+            for i in range(w.table.rowCount()):
+                if w.table.item(i,1).text()=='llama-server':w.table.selectRow(i);break
+            w.process_selected();text=w.details.toPlainText()
+            self.assertIn('Running requests: 0',text);self.assertIn('Waiting requests: n/a',text)
+            self.assertIn('KV-cache pool usage: 25%',text);self.assertIn('not per GPU',text)
+        finally:w.close()

@@ -245,7 +245,7 @@ class Window(QMainWindow):
             button.clicked.connect(lambda _,i=index:self.navigate(i));side.addWidget(button);self.nav.append(button)
         side.addStretch()
         side.addWidget(label('QT 6 EDITION','Eyebrow'))
-        sub=label('Read-only GPU monitoring\nBuilt on gputaskman 0.4.1','Muted');sub.setWordWrap(True);side.addWidget(sub);side.addSpacing(16)
+        sub=label('Qt version 0.4.3\nBuilt on gputaskman 0.4.3','Muted');sub.setWordWrap(True);side.addWidget(sub);side.addSpacing(16)
         help_button=QPushButton('Help & licenses');help_button.clicked.connect(self.help);side.addWidget(help_button)
         outer.addWidget(sidebar)
         content=QWidget();body=QVBoxLayout(content);body.setContentsMargins(26,22,26,12);body.setSpacing(15);outer.addWidget(content,1)
@@ -722,6 +722,13 @@ class Window(QMainWindow):
         if llm.get('segments'):
             text+='<h3>Runtime / estimated memory breakdown</h3><p>Model files and runtime logs can span GPUs. These sizes are not measured per-device model placement and do not independently prove current GPU residency.</p>'
             for part in llm['segments']:text+='<p>'+esc(part.get('label') or part.get('kind'))+': '+memory(part.get('bytes'))+'</p>'
+        server=llm.get('server') or {}
+        if any(server.get(k) is not None for k in ('requests_running','requests_waiting','kv_cache_usage')):
+            text+='<h3>Runtime-reported server metrics</h3><p>Server engine scope; not per GPU, worker or measured VRAM.</p>'
+            for key,title in [('requests_running','Running requests'),('requests_waiting','Waiting requests')]:
+                text+='<p>'+title+': '+esc(number(server.get(key)))+'</p>'
+            usage=server.get('kv_cache_usage')
+            text+='<p>KV-cache pool usage: '+esc(number(usage*100 if usage is not None else None,'%'))+'</p>'
         for note in llm.get('notes',[]):text+='<p>'+esc(note)+'</p>'
         if row.get('installed_models'):text+='<p>Installed model candidates exist, but are not proven loaded.</p>'
         text+='<p style="color:#95a6ad">Unavailable values remain n/a. System RAM is separate from GPU memory.</p>'
@@ -748,7 +755,7 @@ class Window(QMainWindow):
             except OSError as e:QMessageBox.warning(self,'Export failed',str(e))
     def help(self):
         dialog=QDialog(self);dialog.setWindowTitle('Help & licenses');dialog.resize(780,620);lay=QVBoxLayout(dialog);text=QTextBrowser();text.setOpenExternalLinks(True)
-        text.setHtml('''<h1>GPU Task Manager · Qt 6</h1><p>A separate graphical frontend for gputaskman 0.4.1, with an original dark interface and independent GPU views.</p>
+        text.setHtml('''<h1>GPU Task Manager · Qt 6</h1><p>A separate graphical frontend for gputaskman 0.4.3, with an original dark interface and independent GPU views.</p>
 <h2>Navigation</h2><p><b>Overview</b>: key readings and histories. <b>Performance</b>: all metrics or a single full-width chart. <b>All GPUs</b>: independent per-device readings and identities, including offline devices. Click any chart to focus it. <b>Processes</b>: sortable GPU process list, search and inspection. <b>Diagnostics</b>: counter availability and provenance.</p>
 <p><b>Space</b> pause/resume · <b>Ctrl+R</b> reconnect · <b>Ctrl+P</b> processes · <b>F1</b> help.</p>
 <h2>Full access</h2><p>The window runs as your user. Startup asks Polkit for full access; use --standard-access to skip it. “Enable full access” also asks Polkit to start only the read-only collector as root. Cancelling keeps standard access. Root shells need no further authentication. No kernel security settings are modified.</p>
@@ -822,6 +829,7 @@ def demo_fleet_message(ts,index,count=1):
 
 def main():
     parser=argparse.ArgumentParser(description='GPU Task Manager, Qt 6 frontend')
+    parser.add_argument('--version',action='version',version='GPU Task Manager Qt6 0.4.3 (upstream collector 0.4.3)')
     parser.add_argument('--demo',action='store_true',help='show clearly labeled synthetic readings')
     parser.add_argument('--standard-access',action='store_true',help='start without requesting administrator access')
     parser.add_argument('--demo-gpus',type=int,default=1,help='number of synthetic GPUs in demo mode')

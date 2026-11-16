@@ -29,3 +29,7 @@ The native tests above use virtual X11/Wayland servers inside containers, not
 physical iLO hardware. They do not establish compatibility with every desktop,
 GPU driver, MIG configuration, authentication agent or server firmware.
 MIG instances are not separately monitored. NVIDIA/AMD hardware reports are welcome.
+
+## 0.4.3 / 2026-11-16
+
+Unmodified upstream v0.4.3 collector integrated. 682 upstream tests completed successfully (6 platform skips); 34 Qt/integration tests passed. Frozen GUI passed live collector/navigation and 16-GPU demo self-tests. Fresh package installation passed in Debian 13.7 and Ubuntu 26.04 containers: offscreen 4/16-GPU demos, real collector communication, X11/XCB and headless Wayland at 1024×768. Container tests do not validate physical Intel Xe or multi-NVIDIA hardware, GPU performance-counter permissions or real iLO behavior.

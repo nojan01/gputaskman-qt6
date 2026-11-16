@@ -1,7 +1,7 @@
 # GPU Task Manager · Qt 6
 
 A native, MIT-licensed Linux GPU monitor built on Scott Hanselman's
-[gputaskman](https://github.com/shanselman/gputaskman) 0.4.1 collector.
+[gputaskman](https://github.com/shanselman/gputaskman) 0.4.3 collector.
 Uses PySide6 with an original dark interface, clear charts and independent GPU views.
 
 **Primary targets: Debian 13.7 and Ubuntu 26.04, amd64.** Linux Mint 22.3 and
@@ -13,11 +13,11 @@ is claimed for this frontend.
 ## Install
 
 Download the DEB and `SHA256SUMS` from the
-[GitHub release](https://github.com/nojan01/gputaskman-qt6/releases/tag/v0.4.1).
+[GitHub release](https://github.com/nojan01/gputaskman-qt6/releases/tag/v0.4.3).
 Close the previous GUI instance, then install:
 
 ```sh
-sudo apt install ./gputaskman-qt6_0.4.1-1_amd64.deb
+sudo apt install ./gputaskman-qt6_0.4.3-1_amd64.deb
 ```
 
 Launch **GPU Task Manager (Qt 6)** in the application menu or run `gputaskman-qt6`.
@@ -133,3 +133,7 @@ behavior and observed behavior when reporting a GPU-specific problem.
 
 The checked-in [CI template](docs/ci-workflow.yml) is ready for GitHub Actions;
 workflow activation requires workflow-write permission. See [CI status](docs/CI.md).
+
+## Version numbering
+
+Qt releases follow the integrated upstream collector version (currently 0.4.3). Debian package revisions (`0.4.3-1`, `0.4.3-2`, ...) identify integration fixes using the same collector. This does not imply that the Qt interface implements every upstream terminal command.
