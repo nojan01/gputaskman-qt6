@@ -13,6 +13,19 @@ class GuiTests(unittest.TestCase):
         self.window=Window(demo=True);self.window.demo_timer.stop();self.window.show();app.processEvents()
     def tearDown(self):
         self.window.close();app.processEvents()
+    def test_diagnostics_preserves_scroll_during_live_updates(self):
+        w=self.window;w.resize(1024,768);w.navigate(3)
+        frame=demo_message(time.time(),0)
+        frame['snapshot']['counter_status']='Diagnostic note. '*200
+        w.receive(frame);app.processEvents()
+        bar=w.diagnostics.verticalScrollBar();self.assertGreater(bar.maximum(),0)
+        bar.setValue(bar.maximum()//2);position=bar.value()
+        for index in range(3):
+            frame['sample_ms']=index+10
+            w.receive(frame);app.processEvents()
+            self.assertEqual(bar.value(),position)
+        self.assertIn('12',w.diagnostics.toPlainText())
+
     def test_unknown_and_zero_stay_distinct(self):
         self.assertEqual(memory(None),'n/a');self.assertEqual(memory(0),'0 B')
         self.assertIsNone(percent(100,None));self.assertEqual(percent(0,100),0)

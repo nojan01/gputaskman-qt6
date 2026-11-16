@@ -743,7 +743,15 @@ class Window(QMainWindow):
         for title,value in fields:
             if value is not None and value!='':text+=f'<p><b>{html.escape(title)}</b><br>{html.escape(str(value))}</p>'
         text+='<h3>How to interpret the readings</h3><p>Unknown is n/a, never zero. Device telemetry, OS-reported system memory, inferred process memory and runtime-reported model evidence remain separate. Intel memory may be a sum of visible clients with a PCI-window estimate for capacity. It is not a device-wide measured total. AMD graphics-engine activity is not necessarily equivalent to NVIDIA utilization. Full access cannot create counters the driver does not expose.</p>'
+        key=data.get('gpu_id') or identity.get('id') or self.gpu.currentData()
+        if getattr(self,'_diagnostic_document',None)==(key,text):return
+        same_gpu=getattr(self,'_diagnostic_gpu',None)==key
+        vertical=self.diagnostics.verticalScrollBar();horizontal=self.diagnostics.horizontalScrollBar()
+        y,x=vertical.value(),horizontal.value()
         self.diagnostics.setHtml(text)
+        if same_gpu:
+            vertical.setValue(y);horizontal.setValue(x)
+        self._diagnostic_gpu=key;self._diagnostic_document=(key,text)
     def check_stale(self):
         if self.replay_frames is None and not self.demo and not self.paused and self.last_received and time.monotonic()-self.last_received>max(5,3*(self.rate.currentData() or 1)):
             self.live.setText('●  Waiting for readings');self.live.setStyleSheet('color:#ffb52e;')

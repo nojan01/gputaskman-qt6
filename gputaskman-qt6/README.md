@@ -11,11 +11,11 @@ is claimed for this frontend.
 ## Install
 
 Download the DEB and `SHA256SUMS` from the
-[GitHub release](https://github.com/nojan01/gputaskman-qt6/releases/tag/v0.4.3).
+[GitHub release](https://github.com/nojan01/gputaskman-qt6/releases/tag/v0.4.3-2).
 Close the previous GUI instance, then install:
 
 ```sh
-sudo apt install ./gputaskman-qt6_0.4.3-1_amd64.deb
+sudo apt install ./gputaskman-qt6_0.4.3-2_amd64.deb
 ```
 
 Launch **GPU Task Manager (Qt 6)** in the application menu or run `gputaskman-qt6`.
@@ -135,3 +135,9 @@ Use **Record** to stream complete all-GPU samples to a JSONL file, and **Stop re
 **Open recording** stops the live collector and replays the saved samples using original time intervals. All views and per-GPU histories remain available. Use Pause/Resume, Rewind and 0.5×/1×/2×/4× speed (applied to the next scheduled interval). The timestamp and sample position appear beside the controls. Return to live restarts acquisition and may require authentication. Playback does not require elevated access. Playback currently loads files up to 256 MB into memory; recording streams to disk without this size limit. No random seeking or CSV export is included.
 
 Recording duration can be set from 1 to 10080 minutes (7 days); 0 / Unlimited keeps recording until stopped. The countdown uses elapsed monotonic time, including acquisition pauses. At expiry the file closes automatically while live monitoring continues. The duration is locked during recording and playback.
+
+## AppImage
+
+Download GPU-Task-Manager-0.4.3-2-x86_64.AppImage, mark executable and run. Without a system collector it uses its bundled collector in standard-access mode. Full GPU-counter access requires installing the matching DEB (trusted collector + Polkit policy); the AppImage then uses that helper. Root is not needed for playback. If FUSE is unavailable use --appimage-extract-and-run. Requires x86_64 Linux, glibc >= 2.38, working desktop graphics libraries and host GPU drivers.
+
+AppImage runtime notices/build information are in third-party/appimage; corresponding runtime/libfuse sources are a separate release asset. To build, run build_deb.py then build_appimage.py --appimagetool /path/to/appimagetool --runtime-file /path/to/runtime-x86_64.

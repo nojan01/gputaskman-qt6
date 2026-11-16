@@ -10,7 +10,7 @@ import tempfile
 here=Path(__file__).resolve().parent
 workspace=here.parent
 out=here/'release';out.mkdir(exist_ok=True)
-version='0.4.3-1'
+version='0.4.3-2'
 source_archive=out/f'gputaskman-qt6_{version}_source.tar.gz'
 with tarfile.open(source_archive,'w:gz') as archive:
     for folder in [here,workspace/'gputaskman-source']:
