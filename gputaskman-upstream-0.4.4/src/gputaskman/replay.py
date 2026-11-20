@@ -314,7 +314,15 @@ def describe(recording: Recording, playback: Playback, snapshot: dict, *, width:
     return "\n".join(lines)
 
 
-def process_rows(snapshot: dict) -> tuple[list[tuple[str, str, str, str, str, str, str]], list[str]]:
+def _paged(snapshot: dict, proc: dict) -> str:
+    """macOS compressed graphics memory. Blank on other backends; ``n/a`` when a metal row did not record it."""
+    if snapshot.get("backend") != "metal":
+        return ""
+    number = _number(proc.get("graphics_swapped_bytes"))
+    return "n/a" if number is None else gb(number)
+
+
+def process_rows(snapshot: dict) -> tuple[list[tuple[str, str, str, str, str, str, str, str]], list[str]]:
     """Table cells for the recorded processes, in the order the snapshot stored them.
 
     Returns the rows and any notes about rows that were not objects. VRAM is the recorded measured
@@ -334,6 +342,7 @@ def process_rows(snapshot: dict) -> tuple[list[tuple[str, str, str, str, str, st
             _plain(proc.get("kind")),
             _vram(proc),
             _shared(snapshot, proc),
+            _paged(snapshot, proc),
             _pct(proc.get("gpu_pct")),
             _note(proc),
         ))
@@ -380,7 +389,7 @@ class ReplayApp(App):
 
     def on_mount(self) -> None:
         table = self.query_one("#procs", DataTable)
-        for name in ("PID", "Process", "Kind", "VRAM", "Shared", "GPU%", "Note"):
+        for name in ("PID", "Process", "Kind", "VRAM", "Shared", "Paged", "GPU%", "Note"):
             table.add_column(name, key=name)
         panel = self.query_one("#replay", Static)
         panel.border_title = "GPU Session Replay"

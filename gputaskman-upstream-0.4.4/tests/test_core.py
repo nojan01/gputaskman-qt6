@@ -43,6 +43,7 @@ from gputaskman.procinfo import (AI_KINDS, AMBIGUOUS_EXTS, MODEL_EXTS, PATH_ARG_
                                 make_model)
 from gputaskman.report import to_dict, to_text
 from gputaskman.stores import ollama_names, store_name
+from gputaskman.tcc import TccAdapter
 from tools.capture_screenshots import for_publication
 
 
@@ -421,6 +422,29 @@ class DeviceSelectionTests(unittest.TestCase):
         self.assertIsNone(select_nv_device(gpu, [nv_gpu, nv_gpu], 0))
         intel = Adapter(2, "Intel GPU", 0x8086, 8 * GiB, 0, False)
         self.assertIsNone(select_nv_device(intel, [nv_gpu], 0))
+        # Windows reports PCI segment 15 bus 1 as bus 0xF01 (RTX Spark N1X, driver 621.14).
+        spark = Adapter(3, "NVIDIA RTX Spark N1X", 0x10DE, 80 * GiB, 0, False, (0xF01, 0, 0))
+        nv_spark = NvDevice(index=0, pci_bus="0000000F:01:00.0", driver_model="WDDM")
+        nv_bus1 = NvDevice(index=1, pci_bus="00000000:01:00.0", driver_model="WDDM")
+        self.assertIs(select_nv_device(spark, [npu, nv_bus1, nv_spark], 0), nv_spark)
+        self.assertIsNone(select_nv_device(spark, [npu, nv_bus1], 0))
+
+    @patch("gputaskman.collector.sys.platform", "win32")
+    def test_mcdm_peer_in_another_domain_does_not_hide_wddm_telemetry(self):
+        gpu = Adapter(1, "RTX", 0x10DE, 16 * GiB, 0, False, (6, 0, 0))
+        compute = TccAdapter((1 << 62) | 9 << 16 | 6 << 8, "GB300", 0x10DE, 256 * GiB, 0, False,
+                             (6, 0, 0), pci_domain=9, driver_model="MCDM")
+        nv_gpu = NvDevice(index=0, pci_bus="00000000:06:00.0", driver_model="WDDM")
+        nv_compute = NvDevice(index=1, pci_bus="00000009:06:00.0", driver_model="MCDM")
+        devices = [nv_compute, nv_gpu]
+        self.assertIs(select_nv_device(gpu, devices, 0, [compute, gpu]), nv_gpu)
+        self.assertIs(select_nv_device(compute, devices, 1, [compute, gpu]), nv_compute)
+
+        other = Adapter(2, "RTX", 0x10DE, 16 * GiB, 0, False, (6, 0, 0))
+        self.assertIsNone(select_nv_device(gpu, devices, 0, [compute, gpu, other]))
+        # TCC remains eligible in the existing DXGI pairing path, so stay conservative.
+        compute.driver_model = nv_compute.driver_model = "TCC"
+        self.assertIsNone(select_nv_device(gpu, devices, 0, [compute, gpu]))
 
 
 class MemoryTests(unittest.TestCase):
@@ -1281,6 +1305,27 @@ class ModelTests(unittest.TestCase):
             d.models[0].kind_hint = "decision model"
             self.assertEqual(classify(d, {}), "diffusion")
             self.assertIn("diffusion", AI_KINDS)
+
+    def test_relative_model_flags_resolve_against_target_cwd(self):
+        with tempfile.TemporaryDirectory() as target, tempfile.TemporaryDirectory() as monitor:
+            loaded, decoy = Path(target) / "model.gguf", Path(monitor) / "model.gguf"
+            loaded.touch()
+            decoy.touch()
+            cmd = ["llama-server", "-m", "model.gguf"]
+            old = os.getcwd()
+            os.chdir(monitor)
+            try:
+                with patch("gputaskman.procinfo.psutil.Process") as process:
+                    process.return_value.cwd.return_value = target
+                    self.assertEqual(_models_from_cmdline(cmd, 123), [str(loaded)])
+                    process.assert_called_once_with(123)
+                # The target's cwd is unknown: skip the path rather than guess with the monitor's cwd.
+                with patch("gputaskman.procinfo.psutil.Process") as process:
+                    process.return_value.cwd.side_effect = PermissionError("protected")
+                    self.assertEqual(_models_from_cmdline(cmd, 123), [])
+                self.assertEqual(_models_from_cmdline(cmd), [])
+            finally:
+                os.chdir(old)
 
     def test_layer_and_kv_estimates(self):
         model = GgufInfo(

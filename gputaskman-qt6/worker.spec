@@ -1,7 +1,7 @@
 from pathlib import Path
 from PyInstaller.utils.hooks import copy_metadata
 root = Path(SPECPATH)
-a = Analysis([str(root / 'worker.py')], pathex=[str(root.parent / 'gputaskman-source/src')],
+a = Analysis([str(root / 'worker.py')], pathex=[str(root.parent / 'gputaskman-upstream-0.4.4/src')],
              datas=copy_metadata('gputaskman', recursive=True),
              excludes=['PyQt6', 'PySide6', 'PIL', 'cairosvg'])
 forbidden = ('libnvidia-ml.so', 'libcuda.so', 'libamd_smi.so')

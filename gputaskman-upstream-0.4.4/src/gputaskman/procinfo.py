@@ -233,15 +233,39 @@ def _model_flags(cmd: list[str]) -> set[str]:
     return flags
 
 
-def _models_from_cmdline(cmd: list[str]) -> list[str]:
+def _process_cwd(pid: int | None) -> str:
+    """The target process's working directory, or "" when it is unknown or not absolute."""
+    if pid is None:
+        return ""
+    try:
+        cwd = psutil.Process(pid).cwd()
+    except (psutil.Error, OSError):
+        return ""
+    return cwd if cwd and os.path.isabs(cwd) else ""
+
+
+def _models_from_cmdline(cmd: list[str], pid: int | None = None) -> list[str]:
+    """Model paths given to known model flags. A relative path is resolved against the target's cwd
+    (looked up once, only when needed), never the monitor's; it is skipped when that cwd is unknown."""
     paths = []
     flags = _model_flags(cmd)
+    cwd, cwd_checked = "", False
     for i, arg in enumerate(cmd):
         val = None
         key, sep, value = arg.partition("=")
         if key in flags:
             val = value if sep else (cmd[i + 1] if i + 1 < len(cmd) else None)
-        if val and os.path.isfile(val):
+        if not val:
+            continue
+        if not os.path.isabs(val):
+            if not cwd_checked:
+                cwd, cwd_checked = _process_cwd(pid), True
+            if not cwd:
+                continue
+            val = os.path.join(cwd, val)
+            if not os.path.isabs(val):
+                continue  # e.g. a Windows drive-relative path on another drive
+        if os.path.isfile(val):
             paths.append(os.path.abspath(val))
     return paths
 
@@ -298,12 +322,8 @@ def _models_from_path_args(d: ProcDetail) -> list[MappedModel]:
         seen.add(spelling)
         if not os.path.isabs(path):
             if not cwd_checked:
-                cwd_checked = True
-                try:
-                    cwd = psutil.Process(d.pid).cwd()
-                except (psutil.Error, OSError):
-                    pass
-            if not cwd or not os.path.isabs(cwd):
+                cwd, cwd_checked = _process_cwd(d.pid), True
+            if not cwd:
                 continue
             path = os.path.join(cwd, path)
             if not os.path.isabs(path):
@@ -550,7 +570,7 @@ class ProcInspector:
             store = store_name(path)
             if _is_model_file(ext, size, gg, store):
                 models[file_key(path)] = make_model(path, size, m.rss, gg, "mapped", store)
-        for path in _models_from_cmdline(d.cmdline):
+        for path in _models_from_cmdline(d.cmdline, d.pid):
             key = file_key(path)
             if key in models:
                 models[key].add_source("cmdline")

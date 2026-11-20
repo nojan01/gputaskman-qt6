@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import ctypes
 import json
+import math
 import os
 import plistlib
 import re
@@ -85,9 +86,29 @@ def parse_clients(entries: list | None) -> dict[int, dict[int, int]]:
     return dict(out)
 
 
+def _graphics_categories(process: dict) -> list:
+    return [v for k, v in (process.get("categories") or {}).items() if str(k).endswith("(graphics)")]
+
+
 def graphics_bytes(process: dict) -> int:
     """footprint JSON: dirty bytes of the categories macOS charges to graphics."""
-    return int(sum(v.get("dirty", 0) for k, v in (process.get("categories") or {}).items() if k.endswith("(graphics)")))
+    return int(sum(v.get("dirty", 0) for v in _graphics_categories(process) if isinstance(v, dict)))
+
+
+def graphics_swapped(process: dict) -> int | None:
+    """Swapped bytes of those same categories. None if one omits ``swapped``; no categories is a measured 0."""
+    categories = _graphics_categories(process)
+    if not categories:
+        return 0
+    total = 0
+    for category in categories:
+        if not isinstance(category, dict) or "swapped" not in category:
+            return None
+        swapped = category["swapped"]
+        if isinstance(swapped, bool) or not isinstance(swapped, (int, float)) or not math.isfinite(swapped) or swapped < 0:
+            return None  # not a byte count: unknown, not a partial sum
+        total += int(swapped)
+    return total
 
 
 def physical_memory() -> int:
@@ -143,7 +164,7 @@ class FootprintPoller:
         self._run = run
         self._clock = clock
         self._targets: dict[int, tuple[object, bool]] = {}  # pid -> (identity, busy), busiest first
-        self._sizes: dict[int, tuple[object, int]] = {}  # pid -> (identity, graphics bytes)
+        self._sizes: dict[int, tuple[object, tuple[int, int | None]]] = {}  # pid -> (identity, (dirty, swapped))
         self._due: dict[int, float] = {}
         self._fails: dict[int, int] = {}
         self._retry: dict[int, float] = {}
@@ -172,12 +193,12 @@ class FootprintPoller:
                         store.pop(pid, None)
         self._wake.set()
 
-    def get(self, pid: int, identity: object = None) -> int | None:
+    def get(self, pid: int, identity: object = None) -> tuple[int, int | None] | None:
         with self._lock:
             hit = self._sizes.get(pid)
         return hit[1] if hit and hit[0] == identity else None
 
-    def measure(self, pid: int) -> int | None:
+    def measure(self, pid: int) -> tuple[int, int | None] | None:
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "fp.json")
             try:
@@ -189,7 +210,7 @@ class FootprintPoller:
                 return None
         for p in data.get("processes") or []:
             if p.get("pid") == pid:
-                return graphics_bytes(p)
+                return graphics_bytes(p), graphics_swapped(p)
         return None
 
     def poll_once(self) -> None:
@@ -319,6 +340,9 @@ class MacCounters:
                 self._owners[pid] = self._owner(pid)
             mine = self._root or self._owners[pid] == self._uid
             g = ProcGpu()
+            # No commit counter, so the Windows paged estimate stays unavailable. "shared" stays in the
+            # set: the column is never shown on macOS, and the LLM breakdown gate still requires it.
+            g.available.discard("committed")
             if pct is None:
                 g.available.discard("engine")
             elif pct:
@@ -332,7 +356,9 @@ class MacCounters:
                 if size is None:
                     g.attributed = False  # not measured yet (or footprint failed): unknown, not zero
                 else:
-                    g.dedicated = float(size)
+                    dirty, swapped = size
+                    g.dedicated = float(dirty)  # dirty only; swapped is not resident graphics memory
+                    g.graphics_swapped = None if swapped is None else float(swapped)
             else:
                 g.attributed = False  # footprint needs root for other users' processes
                 if (pct is None or pct < 0.5) and self._name(pid).lower() not in ALWAYS_SHOWN:

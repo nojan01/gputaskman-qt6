@@ -289,12 +289,12 @@ class DisplayTests(unittest.TestCase):
         self.assertNotIn("0 MB", text)
         rows, _notes = process_rows(body)
         self.assertEqual(rows[0][3], "n/a")
-        self.assertEqual(rows[0][5], "n/a")
+        self.assertEqual(rows[0][6], "n/a")
         measured_zero = snap(processes=[proc(vram=0, gpu_pct=0)])
         measured_zero["vram_used"] = 0
         zero_text = describe(_view(), Playback(1, [1.0], timed=False), measured_zero)
         self.assertIn("Memory: 0 MB / 24.00 GB", zero_text)
-        self.assertEqual(process_rows(measured_zero)[0][0][5], "0")
+        self.assertEqual(process_rows(measured_zero)[0][0][6], "0")
 
     def test_shared_is_blank_only_when_the_row_has_no_shared_counter(self):
         self.assertEqual(process_rows(snap(processes=[proc(shared_bytes=None)]))[0][0][4], "n/a")
@@ -303,6 +303,18 @@ class DisplayTests(unittest.TestCase):
         self.assertEqual(process_rows(linux)[0][0][4], "")
         windows = snap(backend="wsl", processes=[proc(shared_bytes=None, host="windows")])
         self.assertEqual(process_rows(windows)[0][0][4], "n/a")
+
+    def test_paged_is_footprint_swapped_on_metal_and_blank_elsewhere(self):
+        blank = process_rows(snap(processes=[proc()]))[0][0][5]
+        self.assertEqual(blank, "")
+        measured = snap(backend="metal", processes=[proc(graphics_swapped_bytes=0)])
+        self.assertEqual(process_rows(measured)[0][0][5], "0 MB")
+        missing = snap(backend="metal", processes=[proc(graphics_swapped_bytes=None)])
+        self.assertEqual(process_rows(missing)[0][0][5], "n/a")
+        compressed = snap(backend="metal", processes=[proc(graphics_swapped_bytes=2 * GiB, vram=GiB)])
+        row = process_rows(compressed)[0][0]
+        self.assertEqual(row[3], "1.00 GB")
+        self.assertEqual(row[5], "2.00 GB")
 
     def test_inferred_bytes_are_marked_and_not_added_to_the_device_total(self):
         inferred = proc(name="wsl-python", vram=None, vram_attributed=False, vram_inferred_bytes=3 * GiB,
@@ -314,12 +326,12 @@ class DisplayTests(unittest.TestCase):
         self.assertIn("12.00 GB / 24.00 GB", text)
         self.assertNotIn("15.00 GB", text)
         self.assertEqual(process_rows(body)[0][0][3], "3.00 GB?")
-        self.assertIn("inferred", process_rows(body)[0][0][6])
+        self.assertIn("inferred", process_rows(body)[0][0][7])
         unmarked = proc(name="plain", vram=None, vram_attributed=False, vram_inferred_bytes=GiB, vram_inferred_by=None)
         cells = process_rows(snap(processes=[unmarked]))[0][0]
         self.assertEqual(cells[3], "1.00 GB")
         self.assertNotIn("?", cells[3])
-        self.assertIn("inferred", cells[6])
+        self.assertIn("inferred", cells[7])
         agreed = proc(name="agreed", vram=None, vram_attributed=False, vram_inferred_bytes=GiB,
                       vram_inferred_by="consistent")
         self.assertTrue(process_rows(snap(processes=[agreed]))[0][0][3].endswith("*"))
@@ -328,7 +340,7 @@ class DisplayTests(unittest.TestCase):
         host_pid = proc(vram=GiB, vram_attributed=True, vram_inferred_by="consistent")
         cells = process_rows(snap(processes=[host_pid]))[0][0]
         self.assertEqual(cells[3], "1.00 GB*")
-        self.assertIn("inferred", cells[6])
+        self.assertIn("inferred", cells[7])
         self.assertIn("* matched", describe(_view(), Playback(1, [1.0], timed=False), snap(processes=[host_pid])))
 
     def test_malformed_inferred_by_renders_unmarked(self):

@@ -1,0 +1,15 @@
+{
+  "python": "3.12.3",
+  "glibc": [
+    "glibc",
+    "2.39"
+  ],
+  "PySide6_Essentials": "6.8.3",
+  "shiboken6": "6.8.3",
+  "Qt": "6.8.3",
+  "Qt_build": "Qt 6.8.3 (x86_64-little_endian-lp64 shared (dynamic) release build; by GCC 10.3.1 20210422 (Red Hat 10.3.1-1)) [Python limited API 3.12.3]",
+  "PyInstaller": "6.22.3",
+  "collector": "0.4.4",
+  "upstream_commit": "ba765f98f077b77f22e05e568e6ff4c576a87879",
+  "package_version": "0.4.4-1"
+}

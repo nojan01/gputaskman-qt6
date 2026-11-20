@@ -100,6 +100,26 @@ class GuiTests(unittest.TestCase):
         self.window.receive(demo_message(time.time(),42))
         self.assertIsNone(self.window.main_plot.values[-2][1])
         self.assertIsNotNone(self.window.main_plot.values[-1][1])
+    def test_ilo_screen_uses_compact_layout_and_fits_all_pages(self):
+        from types import SimpleNamespace
+        from PySide6.QtCore import QRect
+        for width,height in [(800,560),(1024,720)]:
+            screen=SimpleNamespace(availableGeometry=lambda:QRect(0,0,width,height))
+            with patch.object(Window,'screen',return_value=screen):
+                window=Window(demo=True)
+            try:
+                window.demo_timer.stop()
+                self.assertTrue(window.compact)
+                self.assertTrue(window.isMaximized())
+                window.setWindowState(Qt.WindowNoState);window.resize(width,height);window.show()
+                for index in range(5):
+                    window.navigate(index);app.processEvents()
+                    self.assertLessEqual(window.minimumSizeHint().width(),width)
+                    self.assertLessEqual(window.minimumSizeHint().height(),height)
+                    self.assertLessEqual(window.width(),width)
+                    self.assertLessEqual(window.height(),height)
+            finally:window.close()
+
     def test_small_window_and_render(self):
         self.window.resize(980,700);app.processEvents()
         self.assertTrue(self.window.grab().save('/tmp/gputaskman-qt-small.png'))

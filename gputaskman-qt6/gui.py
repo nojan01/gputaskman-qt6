@@ -233,10 +233,18 @@ class Window(QMainWindow):
         self.settings=QSettings('gputaskman','Qt6')
         self.device_inventory={};self.gpu_snapshots={};self.history_cache={};self.gpu_errors={};self.last_frame={}
         self.fleet_cards={};self.auto_fleet_selected=False;self.selected_gpu_id=None
-        self.setWindowTitle('GPU Task Manager · Qt 6');self.resize(1360,940);self.setMinimumSize(980,700)
-        if not demo and self.settings.value('geometry') is not None:self.restoreGeometry(self.settings.value('geometry'))
+        area=self.screen().availableGeometry()
+        self.compact=area.width()<=1100 or area.height()<=800
+        self.narrow=area.width()<=900 or area.height()<650
+        self.setWindowTitle('GPU Task Manager · Qt 6')
+        self.setMinimumSize(min(720 if self.narrow else 800 if self.compact else 980,area.width()),min(400 if self.narrow else 560 if self.compact else 700,area.height()))
+        self.resize(min(1360,area.width()-20),min(940,area.height()-40))
+        if not demo and not self.compact and self.settings.value('geometry') is not None:
+            self.restoreGeometry(self.settings.value('geometry'))
+            self.resize(min(self.width(),area.width()-20),min(self.height(),area.height()-40))
+        if self.compact:self.setWindowState(self.windowState() | Qt.WindowMaximized)
         central=QWidget();self.setCentralWidget(central);outer=QHBoxLayout(central);outer.setContentsMargins(0,0,0,0);outer.setSpacing(0)
-        sidebar=QFrame();sidebar.setObjectName('Sidebar');sidebar.setFixedWidth(205);side=QVBoxLayout(sidebar);side.setContentsMargins(16,24,16,18)
+        sidebar=QFrame();sidebar.setObjectName('Sidebar');sidebar.setFixedWidth(170 if self.compact else 205);side=QVBoxLayout(sidebar);side.setContentsMargins(12,14,12,12) if self.compact else side.setContentsMargins(16,24,16,18)
         side.addWidget(label('GPU','Brand'));side.addWidget(label('TASK MANAGER','Eyebrow'));side.addSpacing(10)
         side.addWidget(label('LOCAL TELEMETRY','Muted'));side.addSpacing(25)
         self.nav=[]
@@ -245,14 +253,22 @@ class Window(QMainWindow):
             button.clicked.connect(lambda _,i=index:self.navigate(i));side.addWidget(button);self.nav.append(button)
         side.addStretch()
         side.addWidget(label('QT 6 EDITION','Eyebrow'))
-        sub=label('Qt version 0.4.3\nBuilt on gputaskman 0.4.3','Muted');sub.setWordWrap(True);side.addWidget(sub);side.addSpacing(16)
+        sub=label('Qt version 0.4.4\nBuilt on gputaskman 0.4.4','Muted');sub.setWordWrap(True);side.addWidget(sub);side.addSpacing(16)
         help_button=QPushButton('Help & licenses');help_button.clicked.connect(self.help);side.addWidget(help_button)
         outer.addWidget(sidebar)
-        content=QWidget();body=QVBoxLayout(content);body.setContentsMargins(26,22,26,12);body.setSpacing(15);outer.addWidget(content,1)
+        content=QWidget();body=QVBoxLayout(content);body.setContentsMargins(14,12,14,8) if self.compact else body.setContentsMargins(26,22,26,12);body.setSpacing(8 if self.compact else 15)
+        self.content_scroll=None
+        if self.narrow:
+            self.content_scroll=QScrollArea();self.content_scroll.setWidgetResizable(True)
+            self.content_scroll.setWidget(content);outer.addWidget(self.content_scroll,1)
+        else:outer.addWidget(content,1)
         header=QHBoxLayout();title_col=QVBoxLayout();title_col.setSpacing(3)
         self.heading=label('Overview','PageTitle');title_col.addWidget(self.heading)
         self.subtitle=label('Connecting to the GPU collector…','Muted');self.subtitle.setWordWrap(True);title_col.addWidget(self.subtitle);header.addLayout(title_col,1)
-        self.gpu=QComboBox();self.gpu.setMinimumWidth(245);self.gpu.setMaximumWidth(390);self.gpu.view().setMinimumWidth(700);self.gpu.addItem('GPU 0',0);self.gpu.currentIndexChanged.connect(self.gpu_changed);header.addWidget(self.gpu)
+        if self.compact:
+            body.addLayout(header)
+            header=QHBoxLayout()
+        self.gpu=QComboBox();self.gpu.setMinimumWidth(245);self.gpu.setMaximumWidth(390);self.gpu.view().setMinimumWidth(min(700,area.width()-200));self.gpu.addItem('GPU 0',0);self.gpu.currentIndexChanged.connect(self.gpu_changed);header.addWidget(self.gpu)
         self.rate=QComboBox()
         for seconds in [.5,1,2,5]:self.rate.addItem(f'{seconds:g} s refresh',seconds)
         self.rate.setCurrentIndex(1);self.rate.currentIndexChanged.connect(self.rate_changed);header.addWidget(self.rate)
@@ -736,7 +752,7 @@ class Window(QMainWindow):
     def populate_diagnostics(self,data):
         nv=data.get('device') or {}
         identity=data.get('gpu_identity') or {}
-        fields=[('GPU',gpu_display_name(data.get('gpu') or nv.get('name'))),('GPU UUID',identity.get('uuid')),('PCI bus address',identity.get('pci_bus_id')),('Board serial (if reported)',identity.get('serial')),('Identity source',identity.get('identity_source')),('Application GPU index',identity.get('index')),('NVML index (may differ)',identity.get('nvml_index')),('Collection cycle (ms)',self.last_frame.get('sample_ms')),('Backend',data.get('backend')),('Driver',data.get('driver')),('CUDA',data.get('cuda')),
+        fields=[('GPU',gpu_display_name(data.get('gpu') or nv.get('name'))),('GPU UUID',identity.get('uuid')),('PCI bus address',identity.get('pci_bus_id')),('Board serial (if reported)',identity.get('serial')),('Identity source',identity.get('identity_source')),('Application GPU index',identity.get('index')),('NVML index (may differ)',identity.get('nvml_index')),('Collector version',self.last_frame.get('collector_version')),('Collection cycle (ms)',self.last_frame.get('sample_ms')),('Backend',data.get('backend')),('Driver',data.get('driver')),('CUDA',data.get('cuda')),
                 ('Telemetry source',nv.get('source')),('GPU memory note',data.get('memory_note')),('Counters',data.get('counter_status')),
                 ('Process scan',data.get('process_status')),('WSL split',data.get('wsl_split')),('Throttle reasons',', '.join(nv.get('throttle') or []))]
         text='<h2>Device & measurement provenance</h2>'
@@ -763,7 +779,7 @@ class Window(QMainWindow):
             except OSError as e:QMessageBox.warning(self,'Export failed',str(e))
     def help(self):
         dialog=QDialog(self);dialog.setWindowTitle('Help & licenses');dialog.resize(780,620);lay=QVBoxLayout(dialog);text=QTextBrowser();text.setOpenExternalLinks(True)
-        text.setHtml('''<h1>GPU Task Manager · Qt 6</h1><p>A separate graphical frontend for gputaskman 0.4.3, with an original dark interface and independent GPU views.</p>
+        text.setHtml('''<h1>GPU Task Manager · Qt 6</h1><p>A separate graphical frontend for gputaskman 0.4.4, with an original dark interface and independent GPU views.</p>
 <h2>Navigation</h2><p><b>Overview</b>: key readings and histories. <b>Performance</b>: all metrics or a single full-width chart. <b>All GPUs</b>: independent per-device readings and identities, including offline devices. Click any chart to focus it. <b>Processes</b>: sortable GPU process list, search and inspection. <b>Diagnostics</b>: counter availability and provenance.</p>
 <p><b>Space</b> pause/resume · <b>Ctrl+R</b> reconnect · <b>Ctrl+P</b> processes · <b>F1</b> help.</p>
 <h2>Full access</h2><p>The window runs as your user. Startup asks Polkit for full access; use --standard-access to skip it. “Enable full access” also asks Polkit to start only the read-only collector as root. Cancelling keeps standard access. Root shells need no further authentication. No kernel security settings are modified.</p>
@@ -837,7 +853,7 @@ def demo_fleet_message(ts,index,count=1):
 
 def main():
     parser=argparse.ArgumentParser(description='GPU Task Manager, Qt 6 frontend')
-    parser.add_argument('--version',action='version',version='GPU Task Manager Qt6 0.4.3 (upstream collector 0.4.3)')
+    parser.add_argument('--version',action='version',version='GPU Task Manager Qt6 0.4.4 (upstream collector 0.4.4)')
     parser.add_argument('--demo',action='store_true',help='show clearly labeled synthetic readings')
     parser.add_argument('--standard-access',action='store_true',help='start without requesting administrator access')
     parser.add_argument('--demo-gpus',type=int,default=1,help='number of synthetic GPUs in demo mode')

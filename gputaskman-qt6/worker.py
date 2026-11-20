@@ -1,6 +1,8 @@
 """Read-only multi-GPU collector process. MIT; original gputaskman backend."""
 import argparse,json,os,signal,sys,threading,time,math
 from fleet import Fleet
+from importlib.metadata import version
+COLLECTOR_VERSION = version("gputaskman")
 
 class RefreshControl:
     """Validated interval changes over the existing stdin channel, no process restart."""
@@ -17,6 +19,7 @@ def run():
     from gputaskman.collector import Collector,enumerate_adapters,ordered_adapters
     from gputaskman.host import HostSampler,to_dict as system_dict
     parser=argparse.ArgumentParser()
+    parser.add_argument('--version',action='version',version='gputaskman collector '+COLLECTOR_VERSION)
     parser.add_argument('--gpu',type=int,default=0,help='legacy preferred index; all physical GPUs are sampled')
     parser.add_argument('--interval',type=float,default=1)
     parser.add_argument('--once',action='store_true')
@@ -48,7 +51,7 @@ def run():
                 try:system=sampler.sample()
                 except Exception as error:system_error=str(error)
                 snapshots,errors=fleet.sample(system,system_error)
-                message={'protocol':2,'gpus':list(fleet.known.values()),'snapshots':snapshots,'errors':errors,
+                message={'protocol':2,'collector_version':COLLECTOR_VERSION,'gpus':list(fleet.known.values()),'snapshots':snapshots,'errors':errors,
                          'elevated':os.geteuid()==0,'taken':time.time(),'sample_ms':round((time.monotonic()-started)*1000,1),'interval_seconds':refresh.interval}
                 if system:message['system']=system_dict(system)
                 if discovery_error:message['discovery_error']=discovery_error

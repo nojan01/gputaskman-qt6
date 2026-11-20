@@ -1,4 +1,4 @@
-"""NVIDIA GPUs in TCC mode: compute-only, so Windows lists no adapter and publishes no GPU counters for them."""
+"""NVIDIA TCC/MCDM compute GPUs omitted by DXGI, discovered and sampled through NVML."""
 
 from __future__ import annotations
 
@@ -11,17 +11,19 @@ from .nvml import Nvml
 from .pdh import AdapterGpu, ProcGpu
 
 NVML_DRIVER_TCC = 1
+NVML_DRIVER_MCDM = 2
 
 
 class TccAdapter(Adapter):
-    """A TCC-mode NVIDIA GPU, found through NVML because DXGI does not list it. It adds no fields, so --json
-    looks the same for every adapter. Its luid is made up from the PCI address, so it is the same on every run
-    (`diff` pairs adapters by it)."""
+    """A TCC/MCDM NVIDIA GPU, found through NVML because DXGI does not list it. JSON includes its PCI domain
+    even when device telemetry is unavailable. Its luid is made up from the PCI address, so it is the same
+    on every run (`diff` pairs adapters by it)."""
 
     def __init__(self, luid: int, name: str, vendor_id: int, dedicated_vram: int, shared_system: int, software: bool,
-                 pci_address: tuple[int, int, int] | None = None, pci_domain: int = 0) -> None:
+                 pci_address: tuple[int, int, int] | None = None, pci_domain: int = 0, driver_model: str = "TCC") -> None:
         super().__init__(luid, name, vendor_id, dedicated_vram, shared_system, software, pci_address)
         self._pci_domain = pci_domain
+        self.driver_model = driver_model
 
     @property
     def pci_domain(self) -> int:
@@ -66,7 +68,8 @@ def _nvml_call(N, name: str, *args):
 
 def _read_device(N, index: int) -> TccAdapter | None:
     handle = _nvml_call(N, "nvmlDeviceGetHandleByIndex", index)
-    if _nvml_call(N, "nvmlDeviceGetDriverModel", handle)[0] != NVML_DRIVER_TCC:
+    model = _nvml_call(N, "nvmlDeviceGetDriverModel", handle)[0]
+    if model not in (NVML_DRIVER_TCC, NVML_DRIVER_MCDM):
         return None
     identity = _pci_identity(_nvml_call(N, "nvmlDeviceGetPciInfo", handle).busId)
     if identity is None:
@@ -76,22 +79,23 @@ def _read_device(N, index: int) -> TccAdapter | None:
     luid = (1 << 62) | domain << 16 | packed_bdf
     return TccAdapter(luid=luid, name=_text(_nvml_call(N, "nvmlDeviceGetName", handle)),
                       vendor_id=VENDOR_NVIDIA, dedicated_vram=_nvml_call(N, "nvmlDeviceGetMemoryInfo", handle).total,
-                      shared_system=0, software=False, pci_address=bdf, pci_domain=domain)
+                      shared_system=0, software=False, pci_address=bdf, pci_domain=domain,
+                      driver_model="MCDM" if model == NVML_DRIVER_MCDM else "TCC")
 
 
 def _discover() -> list[TccAdapter]:
     global _discovery_status
     N = nvml_mod.N
     if N is None:
-        _discovery_status = "NVML is unavailable; TCC GPUs could not be checked."
+        _discovery_status = "NVML is unavailable; TCC/MCDM GPUs could not be checked."
         return []
     if nvml_mod._unsafe:
-        _discovery_status = "NVML is marked unsafe; TCC GPUs were not checked."
+        _discovery_status = "NVML is marked unsafe; TCC/MCDM GPUs were not checked."
         return []
     try:
         _nvml_call(N, "nvmlInit")
     except Exception:
-        _discovery_status = "NVML initialization failed; TCC GPUs could not be checked."
+        _discovery_status = "NVML initialization failed; TCC/MCDM GPUs could not be checked."
         return []
     found, faulted, failed, shutdown_failed = [], False, False, False
     try:
@@ -118,25 +122,25 @@ def _discover() -> list[TccAdapter]:
         except Exception:
             shutdown_failed = True
     if nvml_mod._unsafe:
-        _discovery_status = "NVML encountered an unsafe driver fault; TCC discovery is incomplete."
+        _discovery_status = "NVML encountered an unsafe driver fault; TCC/MCDM discovery is incomplete."
     elif failed:
-        _discovery_status = "NVML TCC discovery was incomplete; one or more devices could not be read."
+        _discovery_status = "NVML TCC/MCDM discovery was incomplete; one or more devices could not be read."
     elif found:
-        _discovery_status = f"NVML TCC discovery succeeded; found {len(found)} TCC GPU(s)."
+        _discovery_status = f"NVML TCC/MCDM discovery succeeded; found {len(found)} TCC/MCDM GPU(s)."
     else:
-        _discovery_status = "NVML TCC discovery succeeded; no TCC GPUs found."
+        _discovery_status = "NVML TCC/MCDM discovery succeeded; no TCC/MCDM GPUs found."
     if shutdown_failed:
         _discovery_status += " NVML shutdown failed."
     return found
 
 
 def tcc_discovery_status() -> str:
-    """A safe, user-facing summary of the one-time TCC discovery attempt."""
+    """A safe, user-facing summary of the one-time TCC/MCDM discovery attempt."""
     return _discovery_status
 
 
 def tcc_adapters(listed: list[Adapter]) -> list[Adapter]:
-    """TCC GPUs that DXGI (`listed`) does not show. NVML is asked once, at the first call: a TCC GPU added or
+    """TCC/MCDM GPUs that DXGI (`listed`) does not show. NVML is asked once, at the first call: a compute GPU added or
     removed while gputaskman runs needs a restart."""
     global _found
     with _lock:
@@ -148,10 +152,10 @@ def tcc_adapters(listed: list[Adapter]) -> list[Adapter]:
 
 
 class TccCounters:
-    """pdh.GpuCounters' interface for one TCC GPU. Windows publishes no GPU counters for it, so adapter memory and
-    per-process memory come from NVML. NVML documents per-process memory as never available under WDDM (Windows
-    manages it); under TCC the NVIDIA driver does, so it is expected here, and an entry without it stays unknown.
-    It uses the collector's NVML session and never opens or closes one."""
+    """pdh.GpuCounters' interface for one TCC/MCDM GPU. Adapter and per-process memory come from NVML.
+    NVML documents per-process memory as unavailable under WDDM (Windows manages it); under TCC the
+    NVIDIA driver does, so it is expected on TCC. An entry without it stays unknown, including on MCDM.
+    Uses the collector's NVML session and never opens or closes one."""
 
     def __init__(self, adapter: TccAdapter, nvml: Nvml) -> None:
         self.adapter = adapter

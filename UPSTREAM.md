@@ -1,11 +1,7 @@
-# Upstream attribution
-
-This project uses the MIT-licensed collector from Scott Hanselman:
-https://github.com/shanselman/gputaskman
-
-Vendored tag: v0.4.3
-Commit: dd5c4a17920aa8a75943409bb9184090ce04a468
-
-The gputaskman-source directory is an unmodified export of that tag. The original
-MIT copyright/license is preserved. Our new Qt application and integration are
-MIT, Copyright (c) 2026 Norbert Jander. This is an independent frontend; no upstream endorsement is claimed. The separately maintained local TUI is not part of this release.
+Upstream collector: Scott Hanselman, MIT.
+Repository: https://github.com/shanselman/gputaskman
+Tag: v0.4.4
+Commit: ba765f98f077b77f22e05e568e6ff4c576a87879
+Source: ../gputaskman-upstream-0.4.4 (unmodified upstream code).
+Qt GUI/integration: Copyright (c) 2026 Norbert Jander, MIT.
+Qt/PySide6 runtime remains 6.8.3. No driver libraries bundled.

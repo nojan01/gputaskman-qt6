@@ -122,8 +122,10 @@ process ("Local Usage" when available). The adapter counter is the total, not th
 allocations, not just overflow. Large usage under VRAM pressure can indicate fallback;
 the counter alone does not prove it.
 
-**PAGED** = max(Total Committed - Local Usage - Non Local Usage, 0). This is an estimate of
+**PAGED** on Windows is max(Total Committed - Local Usage - Non Local Usage, 0), an estimate of
 non-resident committed memory, not a measured eviction count or proof of pagefile activity.
+On macOS the same column is footprint's swapped bytes in graphics categories: compressed graphics
+memory, measured on its own and kept out of the VRAM column.
 
 **Inside** labels are inferred from runtimes and files. Log sizes describe allocated buffers,
 not necessarily current residency. A game's textures cannot be enumerated here.
@@ -215,7 +217,8 @@ class GpuTaskManager(App):
         Binding("question_mark", "help", "Explain"),
     ]
     SORTS = [("VRAM", lambda r: -(r.gpu.shown_vram or 0)), ("GPU%", lambda r: -r.gpu.gpu_pct),
-             ("Shared", lambda r: -r.gpu.shared), ("paged", lambda r: -r.gpu.paged_out),
+             ("Shared", lambda r: -r.gpu.shared),
+             ("paged", lambda r: -(r.gpu.paged_out if r.gpu.graphics_swapped is None else r.gpu.graphics_swapped)),
              ("name", lambda r: r.name.lower())]
     SYSTEM_SORTS = [("RAM", lambda r: (r.ram is None, -(r.ram or 0))),  # unknown last; a measured 0 is not unknown
                     ("CPU%", lambda r: (r.cpu is None, -(r.cpu or 0)))]
@@ -700,7 +703,7 @@ class GpuTaskManager(App):
         rows = s.procs
         if not self.show_all:
             rows = [r for r in rows if not r.gpu.attributed or r.gpu.dedicated >= 32 << 20 or r.gpu.gpu_pct >= 1 or r.gpu.shared >= 64 << 20
-                    or r.gpu.paged_out >= 128 << 20 or r.llm]
+                    or r.gpu.paged_out >= 128 << 20 or (r.gpu.graphics_swapped or 0) >= 128 << 20 or r.llm]
         rows = sorted(rows, key=self.sorts[self.sort_idx][1])
         vm = next((i for i, r in enumerate(rows) if r.kind == "wsl-vm"), None)
         if vm is not None and self.sorts[self.sort_idx][0] == "VRAM":
@@ -741,6 +744,9 @@ class GpuTaskManager(App):
                 shared = Text("n/a", justify="right", style="grey62")
             if wddm and not r.gpu.paged_available:
                 paged = Text("n/a", justify="right", style="grey62")
+            if s.backend == "metal":
+                paged = Text("n/a" if not r.gpu.attributed or r.gpu.graphics_swapped is None else gb(r.gpu.graphics_swapped),
+                             justify="right", style="grey62")
             system_cells = []
             if self.system:
                 known = r.ram is not None  # "…": readable, CPU% needs one more sample; "n/a": the OS wouldn't say
@@ -790,10 +796,15 @@ class GpuTaskManager(App):
         e = r.gpu.engines
         wddm = has_wddm_counters(s, r)
         engines = " ".join(f"{k} {v:.0f}%" for k, v in e.items() if v >= 0.5) or "idle"
+        if s.backend == "metal":
+            swapped = "n/a" if not r.gpu.attributed or r.gpu.graphics_swapped is None else gb(r.gpu.graphics_swapped)
+            paged_text = ("   compressed ", swapped)
+        else:
+            paged_text = ("   paged(est) ", gb(r.gpu.paged_out) if wddm and r.gpu.paged_available else "n/a")
         hdr = Text.assemble(("VRAM ", "bold"), (vram_label(r.gpu), "bold"), "   shared(RAM) ",
                             (gb(r.gpu.shared) if has_shared_counters(s, r) else "n/a",
                              "bold red" if r.gpu.shared > 256 << 20 and s.shared_is_spill else ""),
-                            "   paged(est) ", gb(r.gpu.paged_out) if wddm and r.gpu.paged_available else "n/a",
+                            paged_text[0], paged_text[1],
                             "   engines ", engines if has_engine_counters(s, r) else "n/a")
         if r.detail.runtimes:
             hdr.append("   runtime ", style="grey62")
@@ -810,8 +821,13 @@ class GpuTaskManager(App):
                 out.append(Text(drm_note(r.gpu), style="grey62"))
             elif s.backend == "metal":
                 out.append(Text("GPU memory n/a: footprint can't read other users' processes without root "
-                                "(or hasn't measured this one yet). GPU% comes from Metal's per-process GPU time.",
+                                "(or hasn't measured this one yet). GPU% comes from Metal's per-process GPU time. "
+                                "Compressed graphics memory is n/a for the same reason.",
                                 style="grey62"))
+        if s.backend == "metal" and r.gpu.attributed:
+            out.append(Text("Compressed is footprint's swapped bytes in graphics categories. "
+                            "It is not added to VRAM, and it is not the Windows paged estimate.",
+                            style="grey62"))
         if s.backend == "drm" and not r.host and (r.gpu.resident_vram is not None or r.gpu.resident_gtt is not None):
             def size(v): return gb(v) if v is not None else "n/a"
             out.append(Text(f"Resident VRAM {size(r.gpu.resident_vram)}, GTT {size(r.gpu.resident_gtt)}. "

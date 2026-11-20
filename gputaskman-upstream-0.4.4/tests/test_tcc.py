@@ -6,7 +6,6 @@ what is tested is discovery, ordering, and the rules that keep an unknown value 
 """
 
 import contextlib
-import dataclasses
 import io
 import sys
 import threading
@@ -172,11 +171,19 @@ class DiscoveryTests(TccTestCase):
                           found.software, found.pci_address),
                          ("Tesla P40", VENDOR_NVIDIA, "NVIDIA", 24 * GiB, 0, False, (0x0A, 0, 0)))
 
-    def test_only_a_gpu_that_is_in_tcc_mode_now_counts(self):
+    def test_only_a_gpu_in_tcc_or_mcdm_mode_now_counts(self):
         # WDDM, MCDM, an unknown model, a WDDM GPU that will switch to TCC at the next reboot, and the reverse.
         self.api.devices = [device(1, model=0), device(2, model=2), device(3, model=7),
                             device(4, model=0, pending=1), device(5, model=1, pending=0)]
-        self.assertEqual([a.pci_address[0] for a in tcc_adapters([])], [5])
+        self.assertEqual([a.pci_address[0] for a in tcc_adapters([])], [2, 5])
+
+    def test_mcdm_preserves_driver_model_and_pci_domain(self):
+        self.api.devices = [device(6, model=2, bus_id="00000009:06:00.0")]
+        (found,) = tcc_adapters([])
+        self.assertEqual(found.driver_model, "MCDM")
+        self.assertEqual(found.pci_domain, 9)
+        self.assertTrue(found.matches_pci("00000009:06:00.0"))
+        self.assertFalse(found.matches_pci("00000002:06:00.0"))
 
     def test_a_gpu_dxgi_lists_is_never_added_again(self):
         self.api.devices = [device(0x0A), device(0x0B)]
@@ -288,7 +295,7 @@ class DiscoveryTests(TccTestCase):
 
     def test_discovery_status_distinguishes_no_tcc_devices_from_a_failed_probe(self):
         self.assertEqual(tcc_adapters([]), [])
-        self.assertIn("succeeded; no TCC GPUs found", tcc_mod.tcc_discovery_status())
+        self.assertIn("succeeded; no TCC/MCDM GPUs found", tcc_mod.tcc_discovery_status())
         tcc_mod._found = None
         self.api.init_error = NvmlError("private driver detail")
         self.assertEqual(tcc_adapters([]), [])
@@ -361,9 +368,6 @@ class OrderingTests(unittest.TestCase):
         self.assertIs(select_adapter([tcc, listed], 1), tcc)
         with self.assertRaisesRegex(ValueError, "out of range; 2 GPU adapter"):
             select_adapter([tcc, listed], 2)
-
-    def test_json_describes_a_tcc_adapter_like_any_other(self):
-        self.assertEqual(set(dataclasses.asdict(tcc_adapter())), set(dataclasses.asdict(listed_adapter(1))))
 
 
 class CounterTests(TccTestCase):
@@ -570,6 +574,21 @@ class CollectorTests(TccTestCase):
         with patch("gputaskman.collector.BACKEND", "wddm"), patch("gputaskman.collector.sys.platform", "win32"):
             return c.sample()
 
+    def test_mcdm_device_metrics_pair_by_driver_model(self):
+        self.api.devices = [device(6, model=2, used=9 * GiB, bus_id="00000009:06:00.0",
+                                   processes=[(100, NOT_AVAILABLE)])]
+        (adapter,) = tcc_adapters([])
+        snap = self.sample(self.collector(adapter=adapter))
+        self.assertEqual(snap.nv.driver_model, "MCDM")
+        self.assertEqual(snap.nv.pci_bus, "00000009:06:00.0")
+        self.assertEqual(snap.vram_used, 9 * GiB)
+        self.assertIn("MCDM compute-only", snap.counter_status)
+        data = to_dict(snap)
+        self.assertIsNone(data["attributed"])
+        (process,) = data["processes"]
+        for key in ("vram_bytes", "shared_bytes", "committed_bytes", "gpu_pct", "engines"):
+            self.assertIsNone(process[key], key)
+
     def test_a_tcc_gpu_gets_its_memory_and_processes_from_nvml(self):
         self.api.devices = [device(0x0A, used=9 * GiB, processes=[(200, 2 * GiB), (100, 6 * GiB)])]
         snap = self.sample(self.collector())
@@ -683,12 +702,12 @@ class CliTests(unittest.TestCase):
         with patch("sys.argv", ["gputaskman", "--list-gpus"]), \
                 patch("gputaskman.collector.enumerate_adapters", return_value=[]), \
                 patch("gputaskman.tcc.tcc_discovery_status",
-                      return_value="NVML initialization failed; TCC GPUs could not be checked."), \
+                      return_value="NVML initialization failed; TCC/MCDM GPUs could not be checked."), \
                 contextlib.redirect_stdout(output), contextlib.redirect_stderr(error):
             main()
         self.assertEqual(output.getvalue(), "")
         self.assertEqual(error.getvalue().strip(),
-                         "TCC discovery: NVML initialization failed; TCC GPUs could not be checked.")
+                         "TCC/MCDM discovery: NVML initialization failed; TCC/MCDM GPUs could not be checked.")
 
     def test_list_gpus_displays_full_domain_for_tcc_gpu(self):
         output = io.StringIO()
@@ -699,6 +718,18 @@ class CliTests(unittest.TestCase):
             main()
         self.assertEqual(output.getvalue().strip(),
                          "0: Tesla P40 (NVIDIA, TCC compute-only, PCI 00010000:01:00.0)")
+
+    def test_list_gpus_labels_mcdm_and_preserves_its_domain(self):
+        adapter = tcc_adapter(6, name="GB300", domain=9)
+        adapter.driver_model = "MCDM"
+        output = io.StringIO()
+        with patch("sys.argv", ["gputaskman", "--list-gpus"]), \
+                patch("gputaskman.collector.enumerate_adapters", return_value=[adapter]), \
+                patch("gputaskman.tcc.tcc_discovery_status", return_value=""), \
+                contextlib.redirect_stdout(output):
+            main()
+        self.assertEqual(output.getvalue().strip(),
+                         "0: GB300 (NVIDIA, MCDM compute-only, PCI 00000009:06:00.0)")
 
 
 @unittest.skipUnless(sys.platform == "win32", "the DXGI wrapper exists only on Windows")

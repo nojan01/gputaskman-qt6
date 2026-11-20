@@ -101,6 +101,9 @@ class ProcGpu:
     resident_gtt: float | None = None
     drm_reason: str = ""  # DRM fdinfo: why dedicated/shared are n/a (drm.REASON_*); empty when they are measured
     kfd: bool = False  # amdgpu: holds /dev/kfd (ROCm/HIP), whose compute isn't timed per process
+    # macOS footprint: swapped bytes in categories charged to graphics. None when footprint did not report
+    # the field. Never derived from commit minus resident, and never added to dedicated.
+    graphics_swapped: float | None = None
 
     @property
     def shown_vram(self) -> float | None:

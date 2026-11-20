@@ -54,7 +54,7 @@ cli.py ──► Collector.sample()  (collector.py)
             ├─ adapters        dxgi.py (Windows; tcc.py adds NVIDIA TCC GPUs that DXGI omits) / linux.enumerate_adapters / macos.enumerate_adapters
             ├─ counters        pdh.py GpuCounters (Windows PDH) / tcc.py TccCounters (NVML, TCC GPUs on Windows) /
             │                  linux.py LinuxCounters (NVML, + drm.py for amdgpu and Intel) /
-            │                  macos.py MacCounters (IOKit Metal clients + footprint poller)
+            │                  macos.py MacCounters (IOKit Metal clients + footprint poller: dirty and swapped graphics bytes)
             ├─ device metrics  nvml.py; drm.py read_device (AMD and Intel, Linux) (macOS: MacCounters.device from IOKit)
             ├─ WSL host        wslhost.py: HostStream (powershell PDH via interop), ContextTracker
             ├─ processes       procinfo.py: runtime DLLs, mapped files, cmdline, classify()

@@ -24,7 +24,7 @@ jobs:
       - name: Dependencies
         run: |
           python -m pip install -r gputaskman-qt6/collector-requirements.txt -r gputaskman-qt6/gui-requirements.txt
-          python -m pip install -e ./gputaskman-source
+          python -m pip install -e ./gputaskman-upstream-0.4.4
       - name: Build isolated collector
         working-directory: gputaskman-qt6
         run: python -m PyInstaller --noconfirm --clean worker.spec

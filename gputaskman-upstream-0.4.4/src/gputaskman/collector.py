@@ -10,7 +10,7 @@ from contextlib import ExitStack
 
 import psutil
 
-from .amdsmi import AmdSmi, _bdf, amdsmi_status
+from .amdsmi import AmdSmi, amdsmi_status
 from .adl import Adl
 from .dxgi import (VENDOR_AMD, VENDOR_NVIDIA, VENDOR_HUAWEI, VENDOR_INTEL, VENDOR_QUALCOMM, Adapter,
                   adapter_driver_version)
@@ -20,7 +20,7 @@ from . import nvml as nvml_mod
 from .nvml import Nvml, NvDevice
 from .pdh import ProcGpu
 from .procinfo import AI_KINDS, ProcDetail, ProcInspector, classify
-from .tcc import TccAdapter, TccCounters, tcc_adapters
+from .tcc import TccAdapter, TccCounters, _pci_identity, tcc_adapters
 from .telemetry import DeviceTelemetry
 
 if sys.platform == "win32":
@@ -159,9 +159,10 @@ class Snapshot:
 
 
 def _is_live(g: ProcGpu) -> bool:
+    # graphics_swapped is macOS compressed graphics memory and is not added to dedicated.
     return (
         bool(g.engine_reason) or not g.attributed or g.dedicated >= MiB or g.gpu_pct >= 0.5
-        or g.shared >= 16 * MiB or g.paged_out >= 16 * MiB
+        or g.shared >= 16 * MiB or g.paged_out >= 16 * MiB or (g.graphics_swapped or 0) >= 16 * MiB
     )
 
 
@@ -183,6 +184,16 @@ def ordered_adapters(adapters: list[Adapter]) -> list[Adapter]:
                   key=lambda a: (isinstance(a, TccAdapter), a.vendor_id != VENDOR_NVIDIA, -a.dedicated_vram, a.luid))
 
 
+def _wddm_bdf(pci_bus) -> tuple[int, int, int] | None:
+    """An NVML PCI address in WDDM's ADAPTERADDRESS form. Windows puts the PCI segment above the 8-bit
+    bus (segment 15 bus 1 is bus 0xF01), so domain-0 addresses are unchanged."""
+    identity = _pci_identity(pci_bus)
+    if identity is None:
+        return None
+    domain, (bus, device, function) = identity
+    return domain << 8 | bus, device, function
+
+
 def select_nv_device(adapter: Adapter | None, devices: list[NvDevice], gpu_index: int,
                      adapters: list[Adapter] | None = None) -> NvDevice | None:
     if adapter:
@@ -193,13 +204,16 @@ def select_nv_device(adapter: Adapter | None, devices: list[NvDevice], gpu_index
             matches = [d for d in devices if d.pci_bus and pci_key(d.pci_bus) == adapter.luid]
             return matches[0] if len(matches) == 1 else None
         if isinstance(adapter, TccAdapter):
-            matches = [d for d in devices if adapter.matches_pci(d.pci_bus) and d.driver_model == "TCC"]
+            matches = [d for d in devices if adapter.matches_pci(d.pci_bus) and d.driver_model == adapter.driver_model]
             return matches[0] if len(matches) == 1 else None
         if adapter.pci_address is None:
             return None
-        if adapters is not None and sum(a.pci_address == adapter.pci_address for a in adapters) != 1:
+        # MCDM telemetry is ineligible for a DXGI adapter below, so its known compute-only
+        # adapter cannot make a WDDM peer at the same BDF in another PCI domain ambiguous.
+        if adapters is not None and sum(a.pci_address == adapter.pci_address for a in adapters
+                                        if not (isinstance(a, TccAdapter) and a.driver_model == "MCDM")) != 1:
             return None
-        matches = [d for d in devices if _bdf(d.pci_bus) == adapter.pci_address and d.driver_model != "MCDM"]
+        matches = [d for d in devices if _wddm_bdf(d.pci_bus) == adapter.pci_address and d.driver_model != "MCDM"]
         if len(matches) == 1:
             return matches[0]
         return None
@@ -415,10 +429,10 @@ class Collector:
             snap.counter_adapter_matched = luid in per_luid or luid in adapters
             if isinstance(self.adapter, TccAdapter):
                 snap.counter_status = (
-                    "TCC compute-only GPU: Windows publishes no GPU counters for it, so VRAM and processes come "
+                    f"{self.adapter.driver_model} compute-only GPU: VRAM and processes come "
                     "from NVML. Per-process engine load, shared memory and commit are n/a, and per-process VRAM "
                     "is n/a when the driver does not report it." if snap.counter_adapter_matched else
-                    "NVML could not read this TCC GPU; VRAM and processes are unavailable.")
+                    f"NVML could not read this {self.adapter.driver_model} GPU; VRAM and processes are unavailable.")
             elif not snap.counter_adapter_matched:
                 snap.counter_status = ("Windows GPU counters could not be matched to the selected adapter; "
                                        "VRAM and processes are unavailable. The adapter may be temporarily "
@@ -427,7 +441,7 @@ class Collector:
                 snap.counter_status = ("Some Windows adapter memory counters are unavailable; "
                                        "GPU-PV VMs may not expose them.")
             if (nv is None and self.adapter.vendor_id == VENDOR_NVIDIA and self.adapter.pci_address
-                    and any(_bdf(b) == self.adapter.pci_address for b in nvml_mod.LOST)):
+                    and any(_wddm_bdf(b) == self.adapter.pci_address for b in nvml_mod.LOST)):
                 snap.nv_lost = True
                 snap.counter_status = " ".join(filter(None, (
                     snap.counter_status, "NVIDIA telemetry stopped after this GPU was re-enabled; "

@@ -1,7 +1,7 @@
 # GPU Task Manager · Qt 6
 
 A native, MIT-licensed Linux GPU monitor built on Scott Hanselman's
-[gputaskman](https://github.com/shanselman/gputaskman) 0.4.3 collector.
+[gputaskman](https://github.com/shanselman/gputaskman) 0.4.4 collector.
 Uses PySide6 with an original dark interface, clear charts and independent GPU views.
 
 **Primary targets: Debian 13.7 and Ubuntu 26.04, amd64.** Linux Mint 22.3 and
@@ -13,11 +13,11 @@ is claimed for this frontend.
 ## Install
 
 Download the DEB and `SHA256SUMS` from the
-[GitHub release](https://github.com/nojan01/gputaskman-qt6/releases/tag/v0.4.3-2).
+[GitHub release](https://github.com/nojan01/gputaskman-qt6/releases/tag/v0.4.4-1).
 Close the previous GUI instance, then install:
 
 ```sh
-sudo apt install ./gputaskman-qt6_0.4.3-2_amd64.deb
+sudo apt install ./gputaskman-qt6_0.4.4-1_amd64.deb
 ```
 
 Launch **GPU Task Manager (Qt 6)** in the application menu or run `gputaskman-qt6`.
@@ -110,7 +110,7 @@ in `build_deb.py`. The repository keeps the MIT upstream source separately.
 cd gputaskman-qt6
 python3 -m venv /tmp/gputaskman-build-env
 /tmp/gputaskman-build-env/bin/pip install -r collector-requirements.txt -r gui-requirements.txt
-/tmp/gputaskman-build-env/bin/pip install -e ../gputaskman-source
+/tmp/gputaskman-build-env/bin/pip install -e ../gputaskman-upstream-0.4.4
 QT_QPA_PLATFORM=offscreen /tmp/gputaskman-build-env/bin/python -m unittest discover -s . -p 'test_*.py'
 /tmp/gputaskman-build-env/bin/pyinstaller --noconfirm --clean worker.spec
 /tmp/gputaskman-build-env/bin/pyinstaller --noconfirm --clean gui.spec
@@ -136,4 +136,4 @@ workflow activation requires workflow-write permission. See [CI status](docs/CI.
 
 ## Version numbering
 
-Qt releases follow the integrated upstream collector version (currently 0.4.3). Debian package revisions (`0.4.3-1`, `0.4.3-2`, ...) identify integration fixes using the same collector. This does not imply that the Qt interface implements every upstream terminal command.
+Qt releases follow the integrated upstream collector version (currently 0.4.4). Debian package revisions (`0.4.4-1`, `0.4.4-2`, ...) identify integration fixes using the same collector. This does not imply that the Qt interface implements every upstream terminal command.

@@ -10,6 +10,7 @@ from .collector import ProcRow, Snapshot
 from .llm import gb, server_gauge_text
 from .nvml import format_metric
 from .pdh import ProcGpu
+from .tcc import TccAdapter
 
 
 WSL_HOST_NOTE = ("WSL + Windows host counters: 'WSL VM' is the exact total of Linux GPU memory (all distros). "
@@ -91,8 +92,9 @@ def inferred_note(g) -> str:
 
 
 METAL_NOTE = ("macOS: unified memory, so GPU memory is part of system RAM. Rows show each process's graphics "
-              "footprint; other users' processes (WindowServer, daemons) show GPU% only, since reading their "
-              "memory needs root.")
+              "footprint (dirty bytes). Paged is footprint's swapped bytes for those same graphics categories, "
+              "compressed memory, not a Windows commit estimate. Other users' processes (WindowServer, daemons) "
+              "show GPU% only, since reading their memory needs root.")
 INTEL_MEMORY_NOTE = ("Intel: used is a sum over inspectable processes (no device counter); "
                      "total is the PCI window size, an estimate. Free is not shown.")
 WDDM_DEVICE_NOTE = "Windows does not report temperature, power, clocks or PCIe for this GPU."
@@ -112,6 +114,9 @@ def vram_total_label(s: Snapshot) -> str:
 
 def to_dict(s: Snapshot) -> dict:
     nv = dataclasses.asdict(s.nv) if s.nv else None
+    adapter = dataclasses.asdict(s.adapter) if s.adapter else None
+    if isinstance(s.adapter, TccAdapter):
+        adapter["pci_domain"] = s.adapter.pci_domain
     procs = []
     for p in s.procs:
         wddm = has_wddm_counters(s, p)
@@ -130,6 +135,8 @@ def to_dict(s: Snapshot) -> dict:
             "shared_bytes": int(p.gpu.shared) if has_shared_counters(s, p) else None,
             "committed_bytes": int(p.gpu.committed) if wddm and "committed" in p.gpu.available else None,
             "paged_out_bytes": int(p.gpu.paged_out) if wddm and p.gpu.paged_available else None,
+            "graphics_swapped_bytes": (int(p.gpu.graphics_swapped) if s.backend == "metal" and p.gpu.attributed
+                                       and p.gpu.graphics_swapped is not None else None),
             "gpu_pct": round(p.gpu.gpu_pct, 1) if engines else None,
             "engines": {k: round(v, 1) for k, v in p.gpu.engines.items() if v} if engines else None,
             "engine_unavailable_reason": p.gpu.engine_reason or None,
@@ -159,7 +166,7 @@ def to_dict(s: Snapshot) -> dict:
         procs.append(item)
     return {
         "taken": s.taken, "gpu": s.adapter.name if s.adapter else None, "driver": s.driver, "cuda": s.cuda,
-        "adapter": dataclasses.asdict(s.adapter) if s.adapter else None,
+        "adapter": adapter,
         "vram_total": s.vram_total or None, "vram_used": s.vram_used, "shared_used": s.shared_used,
         "attributed": s.attributed, "backend": s.backend, "shared_is_spill": s.shared_is_spill,
         "host_status": s.host_status or None,
@@ -230,6 +237,8 @@ def to_text(s: Snapshot, limit: int = 30) -> str:
             shared = "N/A"
         if wddm and not p.gpu.paged_available:
             paged = "N/A"
+        if s.backend == "metal":
+            paged = "N/A" if not p.gpu.attributed or p.gpu.graphics_swapped is None else gb(p.gpu.graphics_swapped)
         pid = p.pid_label
         pct = f"{p.gpu.gpu_pct:.0f}" if has_engine_counters(s, p) else "n/a"
         out.append(f"{pid:>{w}}  {p.name[:24]:<24} {p.kind:<10} {p.runtime[:24]:<24} {vram_label(p.gpu):>9} {shared:>8} "

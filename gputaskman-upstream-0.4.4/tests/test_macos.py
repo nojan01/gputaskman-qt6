@@ -47,7 +47,10 @@ class FakePoller:
         self.targets = targets
 
     def get(self, pid, identity=None):
-        return self.sizes.get(pid) if identity == "same" else None
+        if identity != "same" or pid not in self.sizes:
+            return None
+        size = self.sizes[pid]
+        return size if isinstance(size, tuple) else (size, None)
 
     def close(self):
         pass
@@ -80,6 +83,22 @@ class ParseTests(unittest.TestCase):
             "IOAccelerator (graphics)": {"dirty": 8880128, "swapped": 0},
             "IOAccelerator": {"dirty": 65536}, "MALLOC_SMALL": {"dirty": 58 << 20}}}
         self.assertEqual(macos.graphics_bytes(process), 2162163712 + 8880128)
+        self.assertEqual(macos.graphics_swapped(process), 0)  # present zeros stay 0; non-graphics swapped is ignored
+
+    def test_graphics_swapped_ignores_other_categories_and_a_missing_key_is_unknown(self):
+        both = {"categories": {
+            "IOAccelerator (graphics)": {"dirty": 10, "swapped": 5},
+            "Owned physical footprint (unmapped) (graphics)": {"dirty": 7, "swapped": 4},
+            "MALLOC_SMALL": {"dirty": 100, "swapped": 999}}}
+        self.assertEqual(macos.graphics_swapped(both), 9)
+        for bad in (float("nan"), float("inf"), float("-inf"), -1, True, "0"):
+            bad_row = {"categories": {"IOAccelerator (graphics)": {"dirty": 10, "swapped": bad}}}
+            self.assertIsNone(macos.graphics_swapped(bad_row), bad)
+        missing = {"categories": {"IOAccelerator (graphics)": {"dirty": 10}}}
+        self.assertIsNone(macos.graphics_swapped(missing))
+        self.assertEqual(macos.graphics_bytes(missing), 10)
+        none = {"categories": {"MALLOC_SMALL": {"dirty": 1, "swapped": 9}}}
+        self.assertEqual(macos.graphics_swapped(none), 0)
 
     def test_physical_memory_without_sysconf(self):
         with patch.object(macos.os, "sysconf", side_effect=AttributeError, create=True):
@@ -117,6 +136,14 @@ class CountersTests(unittest.TestCase):
         per = procs[macos.ADAPTER_KEY]
         self.assertAlmostEqual(per[79379].gpu_pct, 98.4)  # measured: 98.4% vs Device Utilization 99%
         self.assertEqual(per[79379].dedicated, 2162163712 + 8880128)
+        self.assertIsNone(per[79379].graphics_swapped)  # this fixture did not report swapped
+        self.assertIn("shared", per[79379].available)  # not displayed; the LLM breakdown gate still requires it
+        self.assertNotIn("committed", per[79379].available)
+        self.assertFalse(per[79379].paged_available)
+        from gputaskman.collector import _llm_wanted
+        self.assertTrue(_llm_wanted(
+            type("Row", (), {"kind": "LLM", "detail": type("Detail", (), {"is_diffusion": False, "foundry_local": False,
+                 "has_model_evidence": False})(), "gpu": per[79379]})(), True))
         self.assertTrue(per[79379].attributed)
         self.assertFalse(per[486].attributed)  # own process, not measured yet: unknown, not 0
         self.assertFalse(per[167].attributed)  # root's WindowServer: GPU% only
@@ -126,6 +153,15 @@ class CountersTests(unittest.TestCase):
         self.assertEqual(poller.targets, [(79379, "same", True), (486, "same", False)])  # busiest first
         self.assertEqual(adapters[macos.ADAPTER_KEY].dedicated, 5494423552)
         self.assertEqual((c.device.name, c.device.util_gpu, c.device.driver_model), ("Apple M4", 99, "Metal"))
+
+    def test_swapped_bytes_are_kept_out_of_vram(self):
+        dirty = 2162163712 + 8880128
+        c, _ = self.counters({79379: (dirty, 64 << 20)}, {79379: ME})
+        procs, _ = self.sample(c, accel(), [client(79379, "python3.13", 0, cid=1)], now=1.0)
+        g = procs[macos.ADAPTER_KEY][79379]
+        self.assertEqual(g.dedicated, dirty)
+        self.assertEqual(g.graphics_swapped, 64 << 20)
+        self.assertEqual(g.attributed and "dedicated" in g.available, True)
 
     def test_a_closed_client_does_not_hide_work_on_the_others(self):
         c, _ = self.counters({}, {1: ME})
@@ -218,9 +254,23 @@ class PollerTests(unittest.TestCase):
         p = macos.FootprintPoller(run=self.footprint({42: 3 * GiB}, calls), clock=lambda: 0.0)
         p.set_targets([(42, "a", True)])
         p.poll_once()
-        self.assertEqual(p.get(42, "a"), 3 * GiB)
+        self.assertEqual(p.get(42, "a"), (3 * GiB, None))  # the fixture omits swapped: unknown, not 0
         self.assertIsNone(p.get(42, "b"))
         p.set_targets([(42, "b", True)])  # reused PID: the old size is gone
+        self.assertIsNone(p.get(42, "a"))
+
+    def test_a_reported_swapped_zero_is_kept(self):
+        def run(args, **kw):
+            with open(args[args.index("-j") + 1], "w", encoding="utf-8") as f:
+                json.dump({"processes": [{"pid": 42, "categories": {
+                    "IOAccelerator (graphics)": {"dirty": 100, "swapped": 0},
+                    "MALLOC_SMALL": {"dirty": 50, "swapped": 80}}}]}, f)
+        p = macos.FootprintPoller(run=run, clock=lambda: 0.0)
+        p.set_targets([(42, "a", True)])
+        p.poll_once()
+        self.assertEqual(p.get(42, "a"), (100, 0))
+        self.assertIsNone(p.get(42, "b"))
+        p.set_targets([(42, "b", True)])  # a reused PID drops the swapped reading too
         self.assertIsNone(p.get(42, "a"))
 
     def test_idle_processes_are_measured_less_often(self):
@@ -242,7 +292,7 @@ class PollerTests(unittest.TestCase):
         p.poll_once()
         sizes[5] = None  # footprint times out once
         p.poll_once()
-        self.assertEqual(p.get(5, "a"), GiB)
+        self.assertEqual(p.get(5, "a"), (GiB, None))
         for _ in range(p.FAIL_LIMIT):
             p.poll_once()
         n = len(calls)
@@ -256,7 +306,7 @@ class PollerTests(unittest.TestCase):
 
         def measure(pid):
             p.set_targets([])  # the process exits while footprint runs
-            return 2 * GiB
+            return 2 * GiB, 0
 
         p.measure = measure
         p.poll_once()
@@ -285,6 +335,22 @@ class SkipPathTests(unittest.TestCase):
             self.assertFalse(procinfo._skip_path("/usr/lib/x86_64-linux-gnu/libcuda.so.1"))
 
 
+class ListingTests(unittest.TestCase):
+    def test_idle_compressed_graphics_stays_in_the_snapshot(self):
+        from gputaskman.collector import _is_live
+
+        MiB = 1 << 20
+        held = ProcGpu(dedicated=0, graphics_swapped=20 * MiB)
+        held.available -= {"shared", "committed"}
+        self.assertTrue(_is_live(held))
+        tiny = ProcGpu(dedicated=0, graphics_swapped=MiB)
+        tiny.available -= {"shared", "committed"}
+        self.assertFalse(_is_live(tiny))
+        self.assertFalse(_is_live(ProcGpu()))  # nothing measured, including an unset swapped field
+        paged = ProcGpu(dedicated=0, shared=0, committed=16 * MiB)
+        self.assertTrue(_is_live(paged))  # the Windows estimate still keeps its own row
+
+
 class ReportTests(unittest.TestCase):
     def test_metal_header_and_json(self):
         rows = [ProcRow(79379, "python3.13", "AI", ProcGpu(dedicated=2 * GiB, engines={"gpu": 98.4}),
@@ -301,6 +367,27 @@ class ReportTests(unittest.TestCase):
         data = to_dict(snap)["processes"]
         self.assertEqual((data[0]["vram_bytes"], data[1]["vram_bytes"], data[1]["gpu_pct"]), (2 * GiB, None, 2.0))
         self.assertIsNone(data[0]["shared_bytes"])
+        self.assertIsNone(data[0]["paged_out_bytes"])
+        self.assertIsNone(data[0]["graphics_swapped_bytes"])
+        self.assertIsNone(data[1]["graphics_swapped_bytes"])
+
+    def test_swapped_graphics_bytes_are_paged_and_not_added_to_vram(self):
+        gpu = ProcGpu(dedicated=2 * GiB, engines={"gpu": 10.0}, graphics_swapped=0)
+        row = ProcRow(79379, "python3.13", "AI", gpu, ProcDetail(79379, "python3.13"))
+        snap = Snapshot(taken=1, adapter=None, adapters=[], nv=None, driver="macOS 26.3.1", cuda="",
+                        vram_total=16 * GiB, vram_used=2 * GiB, shared_used=0, backend="metal", procs=[row])
+        text = to_text(snap)
+        line = next(line for line in text.splitlines() if "python3.13" in line and line.lstrip()[:1].isdigit())
+        self.assertIn("2.00 GB", line)
+        self.assertIn("0 MB", line)
+        self.assertIsNone(to_dict(snap)["processes"][0]["paged_out_bytes"])
+        self.assertEqual(to_dict(snap)["processes"][0]["graphics_swapped_bytes"], 0)
+        self.assertEqual(to_dict(snap)["processes"][0]["vram_bytes"], 2 * GiB)
+        gpu.graphics_swapped = 3 * GiB
+        text = to_text(snap)
+        line = next(line for line in text.splitlines() if "python3.13" in line and line.lstrip()[:1].isdigit())
+        self.assertIn("3.00 GB", line)
+        self.assertEqual(to_dict(snap)["processes"][0]["vram_bytes"], 2 * GiB)
 
 
 class DisplayTests(unittest.IsolatedAsyncioTestCase):
@@ -308,7 +395,8 @@ class DisplayTests(unittest.IsolatedAsyncioTestCase):
         from gputaskman import app as app_mod
         from gputaskman.app import GpuTaskManager
         from textual.widgets import Select
-        row = ProcRow(42, "Game", "3D/game", ProcGpu(dedicated=GiB, engines={"gpu": 80.0}), ProcDetail(42, "Game"))
+        row = ProcRow(42, "Game", "3D/game", ProcGpu(dedicated=GiB, engines={"gpu": 80.0}, graphics_swapped=0),
+                      ProcDetail(42, "Game"))
         snap = Snapshot(taken=1, adapter=None, adapters=[], nv=None, driver="macOS 26.3.1", cuda="",
                         vram_total=16 * GiB, vram_used=3 * GiB, shared_used=0, backend="metal", procs=[row])
         with patch.object(app_mod, "BACKEND", "metal"), patch.object(GpuTaskManager, "poll"):
@@ -327,6 +415,7 @@ class DisplayTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(len(options), 3)
                 table = app.query_one("#procs")
                 self.assertEqual(table.get_cell("42", "GPU%").plain, "80")
+                self.assertEqual(table.get_cell("42", "Paged").plain, "0 MB")
                 for column in ("3D", "Copy", "Video"):
                     self.assertEqual(table.get_cell("42", column).plain, "n/a")
 

@@ -6,7 +6,7 @@ from pathlib import Path
 here=Path(__file__).resolve().parent
 parser=argparse.ArgumentParser();parser.add_argument('--appimagetool',required=True);parser.add_argument('--runtime-file',required=True)
 args=parser.parse_args()
-version='0.4.3-2'
+version='0.4.4-1'
 with tempfile.TemporaryDirectory(prefix='gputaskman-appdir-') as folder:
     root=Path(folder)/'GPU-Task-Manager.AppDir';root.mkdir()
     subprocess.run(['dpkg-deb','-x',str(here/'release'/f'gputaskman-qt6_{version}_amd64.deb'),str(root)],check=True)
