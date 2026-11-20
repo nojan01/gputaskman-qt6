@@ -9,6 +9,7 @@ Ubuntu 24.04 remain secondary compatibility targets. No Windows/macOS support
 is claimed for this frontend.
 
 ![All GPUs — synthetic demo data](docs/all-gpus.png)
+![Performance view showing live Tesla T4 metrics](docs/performance-tesla-t4.png)
 
 ## Install
 
