@@ -253,7 +253,7 @@ class Window(QMainWindow):
             button.clicked.connect(lambda _,i=index:self.navigate(i));side.addWidget(button);self.nav.append(button)
         side.addStretch()
         side.addWidget(label('QT 6 EDITION','Eyebrow'))
-        sub=label('Qt version 0.4.4\nBuilt on gputaskman 0.4.4','Muted');sub.setWordWrap(True);side.addWidget(sub);side.addSpacing(16)
+        sub=label('Qt version 0.4.5\nBuilt on gputaskman 0.4.5','Muted');sub.setWordWrap(True);side.addWidget(sub);side.addSpacing(16)
         help_button=QPushButton('Help & licenses');help_button.clicked.connect(self.help);side.addWidget(help_button)
         outer.addWidget(sidebar)
         content=QWidget();body=QVBoxLayout(content);body.setContentsMargins(14,12,14,8) if self.compact else body.setContentsMargins(26,22,26,12);body.setSpacing(8 if self.compact else 15)
@@ -570,7 +570,7 @@ class Window(QMainWindow):
         nv=data.get('device') or {};values=dict(nv)
         values['vram_pct']=percent(data.get('vram_used'),data.get('vram_total'))
         values['vram_bytes']=data.get('vram_used')
-        if str(nv.get('source','')).startswith('AMD '):values['sm_clock']=nv.get('gfx_clock')
+        if (data.get('gpu_identity') or {}).get('vendor')=='AMD' or str(nv.get('source','')).startswith('AMD '):values['sm_clock']=nv.get('gfx_clock')
         ram=data.get('system',{}).get('ram',{})
         values['system_ram']=percent(ram.get('used'),ram.get('total'))
         for metric,history in cache.items():
@@ -666,9 +666,22 @@ class Window(QMainWindow):
         self.ram_plot.values=deque(cache.get('system_ram',[]),maxlen=300)
         self.main_plot.title=self.activity_label(data,nv)+' + temperature'
         for plot in [self.main_plot,self.memory_plot,self.ram_plot]:plot.update()
+        vendor=identity.get('vendor')
+        source=str(nv.get('source') or '')
+        if vendor=='Intel' or source=='Intel sysfs':
+            clock_title='GT clock'
+        elif vendor=='AMD' or source.startswith('AMD '):
+            clock_title='GFX clock'
+        elif vendor=='NVIDIA' or source.startswith('NVML'):
+            clock_title='SM clock'
+        else:
+            clock_title='GPU clock'
+        clock_index=next(i for i,metric in enumerate(METRICS) if metric[1]=='sm_clock')
+        self.plots[clock_index].title=clock_title
+        self.metric_choice.setItemText(clock_index+1,clock_title)
         self.metric_changed()
-        clock=nv.get('gfx_clock') if str(nv.get('source','')).startswith('AMD ') else nv.get('sm_clock')
-        self.clock_label.setText('GPU clock  '+number(clock,'MHz'));self.backend_label.setText('Backend  '+str(data.get('backend','—')).upper())
+        clock=nv.get('gfx_clock') if clock_title=='GFX clock' else nv.get('sm_clock')
+        self.clock_label.setText(clock_title+'  '+number(clock,'MHz'));self.backend_label.setText('Backend  '+str(data.get('backend','—')).upper())
         self.update_system(data.get('system',{}),time.time(),append=False)
         self.populate_processes(data.get('processes',[]));self.populate_diagnostics(data)
         self.statusBar().showMessage('Local monitoring · '+datetime.datetime.now().strftime('%H:%M:%S')+' · '+identity.get('identity_source','session identity')+' · n/a = unavailable')
@@ -708,7 +721,14 @@ class Window(QMainWindow):
             self.table.setRowHidden(row,bool(term and term not in ' '.join(self.table.item(row,c).text() for c in range(self.table.columnCount())).casefold()))
     def process_selected(self):
         i=self.table.currentRow()
-        if i<0 or not self.table.item(i,0):self.details.setHtml('<h3>Select a process</h3><p>Measured values, evidence and model details appear here.</p>');return
+        if i<0 or not self.table.item(i,0):
+            self._detail_document=None
+            if self.table.rowCount()==0 and self.last:
+                status=self.last.get('process_status') or self.last.get('counter_status')
+                self.details.setPlainText('No process rows reported. '+status if status else 'No active GPU processes reported.')
+            else:
+                self.details.setHtml('<h3>Select a process</h3><p>Measured values, evidence and model details appear here.</p>')
+            return
         key=self.table.item(i,0).data(Qt.ItemDataRole.UserRole)
         row=next((r for r in self.rows if (r.get('host'),r.get('pid'),r.get('started_at'))==key),{})
         def esc(value):return html.escape(str(value))
@@ -739,16 +759,41 @@ class Window(QMainWindow):
             text+='<h3>Runtime / estimated memory breakdown</h3><p>Model files and runtime logs can span GPUs. These sizes are not measured per-device model placement and do not independently prove current GPU residency.</p>'
             for part in llm['segments']:text+='<p>'+esc(part.get('label') or part.get('kind'))+': '+memory(part.get('bytes'))+'</p>'
         server=llm.get('server') or {}
-        if any(server.get(k) is not None for k in ('requests_running','requests_waiting','kv_cache_usage')):
+        rates=('prompt_tok_s','gen_tok_s')
+        vllm=server.get('kind')=='vllm'
+        if vllm or any(server.get(k) is not None for k in ('requests_running','requests_waiting','kv_cache_usage')):
             text+='<h3>Runtime-reported server metrics</h3><p>Server engine scope; not per GPU, worker or measured VRAM.</p>'
             for key,title in [('requests_running','Running requests'),('requests_waiting','Waiting requests')]:
                 text+='<p>'+title+': '+esc(number(server.get(key)))+'</p>'
             usage=server.get('kv_cache_usage')
             text+='<p>KV-cache pool usage: '+esc(number(usage*100 if usage is not None else None,'%'))+'</p>'
+            if vllm:
+                for key,title in zip(rates,('Prompt','Generation')):
+                    text+='<p>'+title+' rate (derived): '+esc(number(server.get(key),'tok/s',1))+'</p>'
+        if llm.get('log_history'):
+            text+='<h3>Historical model buffer records</h3><p>Log source: '+esc(llm.get('log_source') or 'unknown')+'</p>'
+            for record in llm['log_history']:
+                when=record.get('timestamp') or 'timestamp unavailable'
+                if record.get('timestamp_issue'):
+                    when+=' ('+str(record['timestamp_issue'])+')'
+                fields=[record.get('device') or 'unknown device',record.get('kind') or 'buffer',
+                        memory(record.get('bytes')),when]
+                text+='<p>'+' · '.join(esc(field) for field in fields)+'</p>'
         for note in llm.get('notes',[]):text+='<p>'+esc(note)+'</p>'
         if row.get('installed_models'):text+='<p>Installed model candidates exist, but are not proven loaded.</p>'
         text+='<p style="color:#95a6ad">Unavailable values remain n/a. System RAM is separate from GPU memory.</p>'
+        identity=(self.gpu.currentData(),key)
+        previous=getattr(self,'_detail_document',None)
+        if previous==(identity,text):
+            return
+        vertical=self.details.verticalScrollBar()
+        horizontal=self.details.horizontalScrollBar()
+        y,x=vertical.value(),horizontal.value()
         self.details.setHtml(text)
+        if previous and previous[0]==identity:
+            vertical.setValue(y)
+            horizontal.setValue(x)
+        self._detail_document=(identity,text)
     def populate_diagnostics(self,data):
         nv=data.get('device') or {}
         identity=data.get('gpu_identity') or {}
@@ -779,7 +824,7 @@ class Window(QMainWindow):
             except OSError as e:QMessageBox.warning(self,'Export failed',str(e))
     def help(self):
         dialog=QDialog(self);dialog.setWindowTitle('Help & licenses');dialog.resize(780,620);lay=QVBoxLayout(dialog);text=QTextBrowser();text.setOpenExternalLinks(True)
-        text.setHtml('''<h1>GPU Task Manager · Qt 6</h1><p>A separate graphical frontend for gputaskman 0.4.4, with an original dark interface and independent GPU views.</p>
+        text.setHtml('''<h1>GPU Task Manager · Qt 6</h1><p>A separate graphical frontend for gputaskman 0.4.5, with an original dark interface and independent GPU views.</p>
 <h2>Navigation</h2><p><b>Overview</b>: key readings and histories. <b>Performance</b>: all metrics or a single full-width chart. <b>All GPUs</b>: independent per-device readings and identities, including offline devices. Click any chart to focus it. <b>Processes</b>: sortable GPU process list, search and inspection. <b>Diagnostics</b>: counter availability and provenance.</p>
 <p><b>Space</b> pause/resume · <b>Ctrl+R</b> reconnect · <b>Ctrl+P</b> processes · <b>F1</b> help.</p>
 <h2>Full access</h2><p>The window runs as your user. Startup asks Polkit for full access; use --standard-access to skip it. “Enable full access” also asks Polkit to start only the read-only collector as root. Cancelling keeps standard access. Root shells need no further authentication. No kernel security settings are modified.</p>
@@ -853,7 +898,7 @@ def demo_fleet_message(ts,index,count=1):
 
 def main():
     parser=argparse.ArgumentParser(description='GPU Task Manager, Qt 6 frontend')
-    parser.add_argument('--version',action='version',version='GPU Task Manager Qt6 0.4.4 (upstream collector 0.4.4)')
+    parser.add_argument('--version',action='version',version='GPU Task Manager Qt6 0.4.5 (upstream collector 0.4.5)')
     parser.add_argument('--demo',action='store_true',help='show clearly labeled synthetic readings')
     parser.add_argument('--standard-access',action='store_true',help='start without requesting administrator access')
     parser.add_argument('--demo-gpus',type=int,default=1,help='number of synthetic GPUs in demo mode')
@@ -864,8 +909,8 @@ def main():
     if not 1<=args.demo_gpus<=64:parser.error("Demo GPU count must be between 1 and 64.")
     QApplication.setApplicationName('GPU Task Manager Qt6');QApplication.setOrganizationName('gputaskman')
     app=QApplication(sys.argv[:1]);app.setStyle('Fusion');app.setStyleSheet(STYLE)
-    icon=Path('/usr/share/icons/hicolor/scalable/apps/gputaskman-qt6.svg')
-    if not icon.exists():icon=Path(__file__).with_name('gputaskman-qt6.svg')
+    icon=Path(__file__).with_name('gputaskman-qt6.svg')
+    if not icon.exists():icon=Path('/usr/share/icons/hicolor/scalable/apps/gputaskman-qt6.svg')
     app.setWindowIcon(QIcon(str(icon)))
     window=Window(args.demo,args.worker,args.screenshot,args.self_test,args.standard_access,args.demo_gpus);window.show()
     code=app.exec();window.stopping=True;window.stop_process();return code

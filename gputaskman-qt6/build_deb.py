@@ -10,10 +10,10 @@ import tempfile
 here=Path(__file__).resolve().parent
 workspace=here.parent
 out=here/'release';out.mkdir(exist_ok=True)
-version='0.4.4-1'
+version='0.4.5-1'
 source_archive=out/f'gputaskman-qt6_{version}_source.tar.gz'
 with tarfile.open(source_archive,'w:gz') as archive:
-    for folder in [here,workspace/'gputaskman-upstream-0.4.4']:
+    for folder in [here,workspace/'gputaskman-upstream-0.4.5']:
         for path in folder.rglob('*'):
             if any(part in {'build','dist','release','.git','.venv','__pycache__'} for part in path.relative_to(folder).parts):continue
             if path.is_file() and path.suffix != '.log':archive.add(path,arcname=Path(folder.name)/path.relative_to(folder))
@@ -77,7 +77,7 @@ third-party/LGPL-3.0-only.txt and matching source archives in the GitHub release
 Bundled Python and other runtimes retain their own licenses.
 ''')
     with tarfile.open(docs/'collector-source.tar.gz','w:gz') as archive:
-        backend=workspace/'gputaskman-upstream-0.4.4'
+        backend=workspace/'gputaskman-upstream-0.4.5'
         for path in (backend/'src').rglob('*.py'):
             archive.add(path,arcname=Path('gputaskman-source')/path.relative_to(backend))
         for name in ['LICENSE','pyproject.toml','uv.lock','README.md']:
@@ -97,7 +97,7 @@ Depends: libc6 (>= 2.38), fonts-dejavu-core, libstdc++6 (>= 12), libgcc-s1, pkex
 Recommends: fonts-dejavu-core
 Homepage: https://github.com/nojan01/gputaskman-qt6
 Description: Qt 6 GPU telemetry and process monitor
- Separate graphical frontend with dark charts and an original interface. Uses gputaskman 0.4.4 for read-only local telemetry.
+ Separate graphical frontend with dark charts and an original interface. Uses gputaskman 0.4.5 for read-only local telemetry.
  Only the collector is elevated via Polkit; the window stays unprivileged.
  The existing gputaskman TUI is not modified or replaced.
 ''')

@@ -71,6 +71,14 @@ class FleetTests(unittest.TestCase):
     def make_fleet(self,count=4,factory=FakeCollector):
         self.adapters=[adapter(i) for i in range(count)];self.records=records(count)
         return Fleet(lambda:self.adapters,factory,lambda adapters:identify_adapters(adapters,self.records,[]))
+    def test_unlimited_scan_budget_survives_inventory_refresh(self):
+        fleet=self.make_fleet()
+        fleet.budget=None
+        for _ in range(2):
+            fleet.sync()
+            self.assertTrue(all(c.scan_budget is None for c in fleet.collectors.values()))
+        fleet.close()
+
     def test_failure_of_one_gpu_does_not_stop_others(self):
         def factory(index,**kwargs):
             if index==2:raise RuntimeError('GPU lost')

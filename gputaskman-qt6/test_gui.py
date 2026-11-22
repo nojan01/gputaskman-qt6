@@ -26,6 +26,27 @@ class GuiTests(unittest.TestCase):
             self.assertEqual(bar.value(),position)
         self.assertIn('12',w.diagnostics.toPlainText())
 
+    def test_selected_process_keeps_scroll_across_refreshes(self):
+        w=self.window
+        w.navigate(2)
+        rows=[dict(pid=pid,name=f'process {pid}',llm={'notes':['long detail']*80}) for pid in (10,20)]
+        w.populate_processes(rows)
+        w.table.selectRow(0)
+        app.processEvents()
+        bar=w.details.verticalScrollBar()
+        self.assertGreater(bar.maximum(),1)
+        position=bar.maximum()//2
+        bar.setValue(position)
+        for value in (10,10,20):
+            for row in rows:
+                row['gpu_pct']=value
+            w.populate_processes(rows)
+            app.processEvents()
+            self.assertEqual(bar.value(),position)
+            self.assertIn(f'{value}%',w.details.toPlainText())
+        w.table.selectRow(1)
+        self.assertEqual(bar.value(),0)
+
     def test_unknown_and_zero_stay_distinct(self):
         self.assertEqual(memory(None),'n/a');self.assertEqual(memory(0),'0 B')
         self.assertIsNone(percent(100,None));self.assertEqual(percent(0,100),0)
@@ -53,6 +74,43 @@ class GuiTests(unittest.TestCase):
         self.window.receive(message)
         self.assertEqual(self.window.single_plot.unit,'%')
         self.assertEqual(self.window.single_plot.values[-1][1],50)
+    def test_vendor_clock_on_switch_and_focus(self):
+        w=self.window
+        for vendor,title,key in [('AMD','GFX clock','gfx_clock'),('Intel','GT clock','sm_clock'),('NVIDIA','SM clock','sm_clock')]:
+            frame=demo_message(time.time(),0)
+            frame['gpus'][0]['vendor']=vendor
+            frame['snapshot']['gpu_identity']=frame['gpus'][0]
+            frame['snapshot']['device'][key]=123
+            w.receive(frame);w.focus_metric(4)
+            self.assertEqual(w.metric_choice.currentText(),title)
+            self.assertEqual(w.single_plot.title,title)
+            self.assertIn('123 MHz',w.clock_label.text())
+
+    def test_rate_only_server_and_historical_buffers(self):
+        w=self.window
+        frame=demo_message(time.time(),0)
+        frame['snapshot']['processes'][0]['llm']={
+            'server':{'kind':'vllm','gen_tok_s':0,'prompt_tok_s':None},
+            'log_source':'/old/log','log_history':[{'device':'GPU <A>','kind':'KV','bytes':42,
+            'timestamp':'yesterday','timestamp_issue':'unparseable'}]}
+        w.receive(frame)
+        for i in range(w.table.rowCount()):
+            if w.table.item(i,0).text()=='17412':w.table.selectRow(i)
+        text=w.details.toPlainText()
+        for expected in ['Generation rate (derived): 0.0 tok/s','Prompt rate (derived): n/a',
+                         'Historical model buffer records','/old/log','GPU <A>','42 B','unparseable']:
+            self.assertIn(expected,text)
+
+    def test_empty_process_list_retains_failure_reason(self):
+        frame=demo_message(time.time(),0)
+        snapshot=frame['snapshot'];snapshot['processes']=[]
+        snapshot['counter_status']='NVML process query failed'
+        self.window.receive(frame)
+        self.assertIn(snapshot['counter_status'],self.window.details.toPlainText())
+        snapshot['counter_status']=None
+        self.window.receive(frame)
+        self.assertIn('No active GPU processes reported',self.window.details.toPlainText())
+
     def test_navigation_and_metric_focus(self):
         self.window.focus_metric(2);self.assertEqual(self.window.pages.currentIndex(),1)
         self.assertEqual(self.window.single_plot.title,'Temperature')

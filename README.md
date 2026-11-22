@@ -1,7 +1,7 @@
 # GPU Task Manager · Qt 6
 
 A native, MIT-licensed Linux GPU monitor built on Scott Hanselman's
-[gputaskman](https://github.com/shanselman/gputaskman) 0.4.4 collector.
+[gputaskman](https://github.com/shanselman/gputaskman) 0.4.5 collector.
 Uses PySide6 with an original dark interface, clear charts and independent GPU views.
 
 **Primary targets: Debian 13.7 and Ubuntu 26.04, amd64.** Linux Mint 22.3 and
@@ -11,14 +11,23 @@ is claimed for this frontend.
 ![All GPUs — synthetic demo data](docs/all-gpus.png)
 ![Performance view showing live Tesla T4 metrics](docs/performance-tesla-t4.png)
 
+## Changes in 0.4.5-1
+
+- Updated the bundled collector to gputaskman 0.4.5. A one-shot scan (`--once`) checks every eligible process. Live scans share a time budget across GPUs. An empty table shows the collector's warning when a scan was incomplete.
+- The clock chart follows the selected GPU and shows Intel GT, AMD GFX or NVIDIA SM clock readings.
+- Process details show vLLM prompt and generation rates in tokens per second, including measured zero. Historical model buffer entries include their timestamps and log sources.
+- Live refresh preserves the scroll position for the selected process. Selecting a different process opens its details at the top.
+- The new icon uses the blue Hardwaretest chip design with a green GPU activity trace.
+- The AppImage uses the installed privileged collector when its version matches. Otherwise it uses the bundled collector with standard user permissions.
+
 ## Install
 
 Download the DEB and `SHA256SUMS` from the
-[GitHub release](https://github.com/nojan01/gputaskman-qt6/releases/tag/v0.4.4-1).
+[GitHub release](https://github.com/nojan01/gputaskman-qt6/releases/tag/v0.4.5-1).
 Close the previous GUI instance, then install:
 
 ```sh
-sudo apt install ./gputaskman-qt6_0.4.4-1_amd64.deb
+sudo apt install ./gputaskman-qt6_0.4.5-1_amd64.deb
 ```
 
 Launch **GPU Task Manager (Qt 6)** in the application menu or run `gputaskman-qt6`.
@@ -111,7 +120,7 @@ in `build_deb.py`. The repository keeps the MIT upstream source separately.
 cd gputaskman-qt6
 python3 -m venv /tmp/gputaskman-build-env
 /tmp/gputaskman-build-env/bin/pip install -r collector-requirements.txt -r gui-requirements.txt
-/tmp/gputaskman-build-env/bin/pip install -e ../gputaskman-upstream-0.4.4
+/tmp/gputaskman-build-env/bin/pip install -e ../gputaskman-upstream-0.4.5
 QT_QPA_PLATFORM=offscreen /tmp/gputaskman-build-env/bin/python -m unittest discover -s . -p 'test_*.py'
 /tmp/gputaskman-build-env/bin/pyinstaller --noconfirm --clean worker.spec
 /tmp/gputaskman-build-env/bin/pyinstaller --noconfirm --clean gui.spec
@@ -137,4 +146,4 @@ workflow activation requires workflow-write permission. See [CI status](docs/CI.
 
 ## Version numbering
 
-Qt releases follow the integrated upstream collector version (currently 0.4.4). Debian package revisions (`0.4.4-1`, `0.4.4-2`, ...) identify integration fixes using the same collector. This does not imply that the Qt interface implements every upstream terminal command.
+Qt releases follow the integrated upstream collector version (currently 0.4.5). Debian package revisions (`0.4.5-1`, `0.4.5-2`, ...) identify integration fixes using the same collector. This does not imply that the Qt interface implements every upstream terminal command.

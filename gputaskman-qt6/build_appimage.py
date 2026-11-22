@@ -6,7 +6,7 @@ from pathlib import Path
 here=Path(__file__).resolve().parent
 parser=argparse.ArgumentParser();parser.add_argument('--appimagetool',required=True);parser.add_argument('--runtime-file',required=True)
 args=parser.parse_args()
-version='0.4.4-1'
+version='0.4.5-1'
 with tempfile.TemporaryDirectory(prefix='gputaskman-appdir-') as folder:
     root=Path(folder)/'GPU-Task-Manager.AppDir';root.mkdir()
     subprocess.run(['dpkg-deb','-x',str(here/'release'/f'gputaskman-qt6_{version}_amd64.deb'),str(root)],check=True)
@@ -22,7 +22,7 @@ with tempfile.TemporaryDirectory(prefix='gputaskman-appdir-') as folder:
 set -eu
 appdir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 helper=/opt/gputaskman-qt6/collector/gputaskman-collector
-if [ -x "$helper" ]; then
+if [ -x "$helper" ] && [ "$("$helper" --version 2>/dev/null)" = "gputaskman collector 0.4.5" ]; then
     exec "$appdir/opt/gputaskman-qt6/gui/gputaskman-qt6" --worker "$helper" "$@"
 fi
 exec "$appdir/opt/gputaskman-qt6/gui/gputaskman-qt6" --worker "$appdir/opt/gputaskman-qt6/collector/gputaskman-collector" --standard-access "$@"

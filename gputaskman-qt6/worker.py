@@ -36,7 +36,7 @@ def run():
         stop.set();wake.set()
     if not args.once:threading.Thread(target=control,daemon=True).start()
     signal.signal(signal.SIGTERM,lambda *_:(stop.set(),wake.set()));signal.signal(signal.SIGINT,lambda *_:(stop.set(),wake.set()))
-    fleet=Fleet(lambda:ordered_adapters(enumerate_adapters()),Collector,budget=Collector.SCAN_BUDGET)
+    fleet=Fleet(lambda:ordered_adapters(enumerate_adapters()),Collector,budget=None if args.once else Collector.SCAN_BUDGET)
     try:
         sampler=HostSampler();sampler.sample();stop.wait(.5);next_discovery=0
         while not stop.is_set():

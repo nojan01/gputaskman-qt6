@@ -1,12 +1,16 @@
 # GPU Task Manager · Qt 6
 
 A native, MIT-licensed Linux GPU monitor built on Scott Hanselman's
-[gputaskman](https://github.com/shanselman/gputaskman) 0.4.4 collector.
+[gputaskman](https://github.com/shanselman/gputaskman) 0.4.5 collector.
 Uses PySide6 with an original dark interface, clear charts and independent GPU views.
 
 **Primary targets: Debian 13.7 and Ubuntu 26.04, amd64.** Linux Mint 22.3 and
 Ubuntu 24.04 remain secondary compatibility targets. No Windows/macOS support
 is claimed for this frontend.
+
+## Changes in 0.4.5-1
+
+The collector's `--once` mode scans every eligible process. Live updates continue to share a time budget across GPUs. Clock charts follow the selected device (Intel GT, AMD GFX or NVIDIA SM). Process details show vLLM engine-wide prompt and generation rates in tokens per second, including measured zero. Historical model buffer records retain their timestamp and log source. Empty process tables display the collector's warning when the scan was incomplete.
 
 ## Install
 
@@ -15,7 +19,7 @@ Download the DEB and `SHA256SUMS` from the
 Close the previous GUI instance, then install:
 
 ```sh
-sudo apt install ./gputaskman-qt6_0.4.4-1_amd64.deb
+sudo apt install ./gputaskman-qt6_0.4.5-1_amd64.deb
 ```
 
 Launch **GPU Task Manager (Qt 6)** in the application menu or run `gputaskman-qt6`.
@@ -107,7 +111,7 @@ in `build_deb.py`. The repository keeps the MIT upstream source separately.
 ```sh
 python3 -m venv /tmp/gputaskman-build-env
 /tmp/gputaskman-build-env/bin/pip install -r collector-requirements.txt -r gui-requirements.txt
-/tmp/gputaskman-build-env/bin/pip install -e ../gputaskman-upstream-0.4.4
+/tmp/gputaskman-build-env/bin/pip install -e ../gputaskman-upstream-0.4.5
 QT_QPA_PLATFORM=offscreen /tmp/gputaskman-build-env/bin/python -m unittest discover -s . -p 'test_*.py'
 /tmp/gputaskman-build-env/bin/pyinstaller --noconfirm --clean worker.spec
 /tmp/gputaskman-build-env/bin/pyinstaller --noconfirm --clean gui.spec
@@ -138,10 +142,10 @@ Recording duration can be set from 1 to 10080 minutes (7 days); 0 / Unlimited ke
 
 ## AppImage
 
-Download GPU-Task-Manager-0.4.4-1-x86_64.AppImage, mark executable and run. Without a system collector it uses its bundled collector in standard-access mode. Full GPU-counter access requires installing the matching DEB (trusted collector + Polkit policy); the AppImage then uses that helper. Root is not needed for playback. If FUSE is unavailable use --appimage-extract-and-run. Requires x86_64 Linux, glibc >= 2.38, working desktop graphics libraries and host GPU drivers.
+Download GPU-Task-Manager-0.4.5-1-x86_64.AppImage, mark executable and run. Without a system collector it uses its bundled collector in standard-access mode. Full GPU-counter access requires installing the matching DEB (trusted collector + Polkit policy); the AppImage uses that helper when its version matches. Root is not needed for playback. If FUSE is unavailable use --appimage-extract-and-run. Requires x86_64 Linux, glibc >= 2.38, working desktop graphics libraries and host GPU drivers.
 
 AppImage runtime notices/build information are in third-party/appimage; corresponding runtime/libfuse sources are a separate release asset. To build, run build_deb.py then build_appimage.py --appimagetool /path/to/appimagetool --runtime-file /path/to/runtime-x86_64.
 
-## Local update 0.4.4-1
+## Local update 0.4.5-1
 
-Collector v0.4.4 (commit ba765f98f077b77f22e05e568e6ff4c576a87879) is bundled from the unmodified upstream source. Qt/PySide6 remains 6.8.3. The compact startup layout also supports 800×600 iLO7 consoles; a scroll area keeps controls reachable on the smallest screens. Multi-GPU views, recording/playback, identities and the dark theme are retained. Physical multi-GPU server validation is still required.
+Collector v0.4.5 (commit 43dcc85dae16ef95055b11ce3a193664d77f24cb) is bundled from the unmodified upstream source. Qt/PySide6 remains 6.8.3. The compact startup layout also supports 800×600 iLO7 consoles; a scroll area keeps controls reachable on the smallest screens. Multi-GPU views, recording/playback, identities and the dark theme are retained. Physical multi-GPU server validation is still required.

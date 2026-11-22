@@ -18,7 +18,7 @@ class Fleet:
                     try:collector.close()
                     except Exception:pass
                 self.errors[key]='Device is no longer detected. Its history is retained.'
-        budget=self.budget/max(1,len(identities))
+        budget=None if self.budget is None else self.budget/max(1,len(identities))
         for record in identities:
             key=record['id']
             previous=self.known.get(key)
