@@ -2,7 +2,11 @@
 import argparse,json,os,signal,sys,threading,time,math
 from fleet import Fleet
 from importlib.metadata import version
-COLLECTOR_VERSION = version("gputaskman")
+
+def _collector_version():
+    try:return version("gputaskman") or "unknown"  # bundled metadata can yield None
+    except Exception:return "unknown"
+COLLECTOR_VERSION = _collector_version()
 
 class RefreshControl:
     """Validated interval changes over the existing stdin channel, no process restart."""
